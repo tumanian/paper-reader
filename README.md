@@ -1,0 +1,105 @@
+# Paper Reader
+
+Highlight text in a PDF or web article and discuss it in-place with Claude.
+Select any passage → it gets highlighted → Claude explains it in the sidebar →
+ask follow-ups in a threaded chat. Each highlight keeps its own conversation.
+
+- **PDFs** — drag & drop, rendered with a selectable text layer
+- **Web articles** — paste a URL (Anthropic research, transformer-circuits.pub,
+  distill.pub, arXiv). arXiv links auto-convert to full HTML via ar5iv.
+- **Citations** — select a citation → open the referenced paper and discuss it
+- **Read later** — bookmark papers and citations for later
+- **Cloud sync** — library, chats, and PDFs sync via Supabase (Postgres + Storage)
+
+Your Anthropic API key stays server-side — it's never in the frontend code.
+Optional: a Groq key powers cheap per-paper conversation summaries in the library
+(Claude is still used for highlight chat).
+
+---
+
+## Supabase setup (cloud persistence)
+
+1. Create a project at [supabase.com](https://supabase.com)
+2. **SQL Editor** → run the contents of `supabase/schema.sql`  
+   (If you already ran the old auth-based schema, run `supabase/migrate-to-email.sql` instead.)
+3. **Storage** → create a private bucket named `pdfs`
+4. Copy **Project URL** and **anon public key** from Settings → API
+
+Add to your environment:
+
+```
+SUPABASE_URL=https://xxxx.supabase.co
+SUPABASE_ANON_KEY=eyJhbG...
+```
+
+Enter your email once on the upload screen — it's saved in the browser and reused
+on every visit. Your library, chats, and PDFs load from Supabase filtered by that
+email. Use the same email on another device to see the same data. No magic links
+or sign-in emails.
+
+---
+
+## Run locally
+
+Requires Node 18+.
+
+```bash
+cd paper-reader
+ANTHROPIC_API_KEY=sk-ant-your-key-here \
+GROQ_API_KEY=gsk_... \
+SUPABASE_URL=https://xxxx.supabase.co \
+SUPABASE_ANON_KEY=eyJhbG... \
+node dev-server.js
+```
+
+Open **http://localhost:3000**.
+
+No `npm install` needed — the local server has zero dependencies.
+
+Without Supabase keys the app falls back to browser-only storage.
+
+---
+
+## Deploy to Vercel
+
+```bash
+cd paper-reader
+vercel
+```
+
+Environment variables (Vercel dashboard → Settings → Environment Variables):
+
+| Variable | Required |
+|---|---|
+| `ANTHROPIC_API_KEY` | Yes (chat) |
+| `GROQ_API_KEY` | Optional (summaries) |
+| `SUPABASE_URL` | Yes (cloud sync) |
+| `SUPABASE_ANON_KEY` | Yes (cloud sync) |
+
+Then `vercel --prod`.
+
+---
+
+## Files
+
+```
+index.html        frontend (PDF.js + Readability.js + reader/chat UI)
+store.js          Supabase + local persistence layer
+handler.js        Anthropic/Groq proxy logic
+dev-server.js     local dev server (static + /api/*)
+api/chat.js       Vercel — chat proxy
+api/config.js     Vercel — public Supabase config
+supabase/schema.sql   Postgres tables, RLS, storage policies
+vercel.json       Vercel routing config
+```
+
+## Notes
+
+- **Full-paper context + caching.** Claude receives the full extracted paper
+  (cached on repeat questions). Papers over ~150k tokens fall back to nearby context.
+- **Persistence.** Supabase Postgres stores documents, discussions, messages, and
+  read-later items. PDF bytes live in Supabase Storage (`pdfs` bucket). A local
+  backup in `localStorage` is kept for resilience. Schema migrations run in the
+  browser on load; cloud migration runs once per user session.
+- Web fetching uses public CORS proxies. If a URL fails, try the PDF.
+- Chat model: `claude-sonnet-4-6`. Summary model: `llama-3.1-8b-instant` (Groq).

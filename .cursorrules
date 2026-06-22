@@ -1,0 +1,63 @@
+# Paper Reader — Cursor agent instructions
+
+This is a static frontend + a tiny Node proxy that holds the Anthropic API key
+server-side. It runs locally and deploys to Vercel with no code changes.
+
+## Run it locally
+The app needs an Anthropic API key in the environment. Start with:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... GROQ_API_KEY=gsk_... \
+SUPABASE_URL=https://xxx.supabase.co SUPABASE_ANON_KEY=eyJ... \
+node dev-server.js
+```
+
+Then open http://localhost:3000. No `npm install` is needed — the local server
+has zero dependencies. Stop with Ctrl+C.
+
+If the chat returns "ANTHROPIC_API_KEY not set", the key wasn't passed on the
+command line. Summaries need `GROQ_API_KEY` (optional). Everything except API
+calls (PDF rendering, URL loading, highlighting, saved history) works without keys.
+
+## Deploy to Vercel
+```bash
+npm i -g vercel        # once
+vercel                 # first deploy, follow prompts
+vercel env add ANTHROPIC_API_KEY   # paste key, select all environments
+vercel env add GROQ_API_KEY        # optional — library conversation summaries
+vercel env add SUPABASE_URL
+vercel env add SUPABASE_ANON_KEY
+vercel --prod          # redeploy to production with the key live
+```
+
+The `api/chat.js` serverless function routes chat to Anthropic and summaries to
+Groq via `handler.js`. The frontend always calls `/api/chat`, so local and prod
+are identical.
+
+## Architecture (don't break these invariants)
+- `index.html`  — entire frontend: PDF.js + Readability.js + reader/chat UI.
+  All app logic is one inline <script>. No build step.
+- `handler.js`  — shared proxy; routes highlight chat to Anthropic and
+  `task: 'summarize'` requests to Groq. The `system` field may be a STRING or
+  an ARRAY of content blocks; the full-paper block carries
+  `cache_control: { type: 'ephemeral' }` for prompt caching. Pass system through
+  untouched.
+- `store.js`    — Supabase + local persistence (`PaperStore`). Do not bypass for saves.
+- `dev-server.js` — local dev server (static files + POST /api/chat, GET /api/config). Zero deps.
+- `api/chat.js` — Vercel serverless function; reuses handler.js.
+- `api/config.js` — returns public Supabase URL + anon key from env.
+- The API key is NEVER in the frontend. Keep it server-side only.
+
+## Storage model
+- **Supabase (primary when configured):** Postgres tables `documents`,
+  `discussions`, `messages`, `read_later`; PDFs in Storage bucket `pdfs`.
+  Keyed by `owner_email` — user enters email once, stored in `paperReader.email.v1`.
+- **Local backup:** `localStorage` key `paperReader.docs.v1` + IndexedDB
+  `paperReader.files`. One-time migration to Supabase via `store.js`.
+- `persistCurrentDoc()` guard — do not remove; prevents history loss on tab-hide.
+
+## Common tasks
+- Change the model: edit the default in `handler.js`.
+- Adjust full-paper size cap: `MAX_PAPER_CHARS` in `index.html`.
+- The web fetch uses public CORS proxies (allorigins.win, corsproxy.io); if a
+  site blocks them, the PDF path is the fallback.

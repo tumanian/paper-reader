@@ -1,0 +1,1878 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Paper Reader</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  background: #eceae4;
+  height: 100vh;
+  overflow: hidden;
+  color: #222;
+}
+
+/* ── Upload ─────────────────────────────────────────── */
+#upload-screen {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 30px 0;
+}
+.upload-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 480px;
+  padding: 0 20px;
+}
+.drop-zone {
+  width: 100%;
+  background: white;
+  border: 2px dashed #ccc8c0;
+  border-radius: 14px;
+  padding: 44px 40px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.drop-zone:hover, .drop-zone.over { border-color: #5b6af7; background: #f8f8ff; }
+.drop-zone .dz-icon { font-size: 36px; margin-bottom: 12px; line-height: 1; }
+.drop-zone h2 { font-size: 17px; font-weight: 600; color: #222; margin-bottom: 6px; }
+.drop-zone p  { font-size: 13px; color: #999; }
+
+.or-div {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; color: #bbb; font-size: 13px;
+}
+.or-div::before, .or-div::after { content:''; flex:1; height:1px; background:#ddd; }
+
+.url-row { display:flex; width:100%; gap:8px; }
+#url-input {
+  flex:1; padding:11px 14px;
+  border:1.5px solid #d8d5cf; border-radius:10px;
+  font-size:14px; font-family:inherit;
+  background:white; color:#222; outline:none;
+  transition:border-color .15s;
+}
+#url-input:focus  { border-color:#5b6af7; }
+#url-input::placeholder { color:#bbb; }
+
+#url-load-btn {
+  padding:11px 18px; background:#5b6af7; color:white;
+  border:none; border-radius:10px; font-size:14px; font-weight:500;
+  cursor:pointer; white-space:nowrap; transition:background .1s;
+}
+#url-load-btn:hover { background:#4a58e6; }
+
+#url-tips { font-size:12px; color:#aaa; text-align:center; line-height:1.6; }
+#url-error { display:none; font-size:13px; color:#e04040; text-align:center; line-height:1.5; }
+
+#auth-bar {
+  width:100%; display:flex; align-items:center; justify-content:space-between; gap:10px;
+  background:white; border:1px solid #e6e3dc; border-radius:10px; padding:10px 14px;
+  font-size:12px; color:#666;
+}
+#auth-status { flex:1; min-width:0; line-height:1.45; }
+#auth-status strong { color:#333; }
+#auth-status .sync-err { color:#c03030; font-size:11px; margin-top:4px; display:block; }
+#auth-bar.sync-error { border-color:#e8b4b4; background:#fff8f8; }
+#auth-email-row { display:none; width:100%; gap:8px; margin-top:8px; }
+#auth-email-row.show { display:flex; }
+#auth-email-input {
+  flex:1; padding:8px 10px; border:1.5px solid #d8d5cf; border-radius:8px;
+  font-size:13px; font-family:inherit;
+}
+#auth-actions { display:flex; gap:6px; flex-shrink:0; }
+.auth-btn {
+  font-size:12px; padding:5px 10px; border-radius:6px; border:1px solid #ddd;
+  background:#f8f7f4; color:#555; cursor:pointer;
+}
+.auth-btn:hover { border-color:#aaa; color:#222; }
+.auth-btn.primary { background:#5b6af7; color:white; border-color:#5b6af7; }
+.auth-btn.primary:hover { background:#4a58e6; }
+
+/* ── Library ─────────────────────────────────────────── */
+#library {
+  width:100%; margin-top:8px;
+  display:none; flex-direction:column; gap:8px;
+}
+#library.show { display:flex; }
+.library-head {
+  display:flex; align-items:center; justify-content:space-between;
+  font-size:12px; color:#999; font-weight:600;
+  text-transform:uppercase; letter-spacing:.04em;
+  padding:0 2px 2px;
+}
+#clear-lib {
+  font-size:11px; color:#c0bcb4; background:none; border:none;
+  cursor:pointer; text-transform:none; letter-spacing:0; font-weight:500;
+}
+#clear-lib:hover { color:#e04040; }
+.lib-card {
+  display:flex; align-items:center; gap:12px;
+  background:white; border:1px solid #e6e3dc;
+  border-radius:10px; padding:12px 14px; cursor:pointer;
+  transition:border-color .12s, box-shadow .12s;
+}
+.lib-card:hover { border-color:#5b6af7; box-shadow:0 2px 8px rgba(91,106,247,.1); }
+.lib-icon { font-size:20px; flex-shrink:0; }
+.lib-info { flex:1; min-width:0; }
+.lib-name {
+  font-size:14px; font-weight:600; color:#222;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.lib-meta { font-size:12px; color:#aaa; margin-top:2px; }
+.lib-summary {
+  font-size:12px; color:#777; margin-top:4px; line-height:1.45;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+}
+.lib-del {
+  flex-shrink:0; font-size:16px; color:#ccc8c0;
+  background:none; border:none; cursor:pointer; padding:2px 4px; line-height:1;
+}
+.lib-del:hover { color:#e04040; }
+
+#read-later { width:100%; margin-top:16px; display:none; }
+#read-later.show { display:block; }
+.rl-card .lib-icon { font-size:18px; }
+.rl-source { font-size:11px; color:#bbb; margin-top:2px; }
+.rl-unresolved { font-size:11px; color:#c9a000; margin-top:2px; }
+
+/* ── Main App ────────────────────────────────────────── */
+#main-app { display:none; height:100vh; overflow:hidden; }
+
+/* ── Viewer ──────────────────────────────────────────── */
+#viewer-panel { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
+#toolbar {
+  display:flex; align-items:center; height:44px;
+  padding:0 16px; gap:12px;
+  background:white; border-bottom:1px solid #e0ddd6; flex-shrink:0;
+}
+#paper-name {
+  flex:1; font-size:13px; font-weight:500; color:#444;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+#source-badge {
+  font-size:11px; color:#aaa; background:#f4f2ee;
+  border-radius:4px; padding:2px 7px; flex-shrink:0;
+}
+#new-btn {
+  font-size:12px; color:#888; background:none;
+  border:1px solid #ddd; border-radius:6px; padding:4px 10px; cursor:pointer;
+}
+#new-btn:hover { border-color:#aaa; color:#333; }
+#return-doc-btn, #read-later-paper-btn {
+  font-size:12px; color:#666; background:#f8f7f4;
+  border:1px solid #e0ddd6; border-radius:6px; padding:4px 10px; cursor:pointer; flex-shrink:0;
+}
+#return-doc-btn:hover, #read-later-paper-btn:hover { border-color:#bbb; color:#333; }
+
+#content-loading {
+  flex:1; display:none;
+  align-items:center; justify-content:center;
+  flex-direction:column; gap:12px; color:#999;
+}
+#load-status { font-size:13px; color:#aaa; }
+.spinner {
+  width:28px; height:28px;
+  border:2.5px solid #ddd; border-top-color:#5b6af7;
+  border-radius:50%; animation:spin .7s linear infinite;
+}
+@keyframes spin { to { transform:rotate(360deg); } }
+
+#reload-note {
+  display:none;
+  background:#fff8e1; border:1px solid #f0e0a0; color:#8a7320;
+  font-size:12.5px; padding:8px 16px; text-align:center; flex-shrink:0;
+}
+#reload-note button {
+  background:none; border:none; color:#5b6af7; cursor:pointer;
+  font-size:12.5px; font-weight:600; text-decoration:underline;
+}
+
+/* ── PDF ─────────────────────────────────────────────── */
+#pdf-pages {
+  flex:1; overflow-y:auto; padding:24px 20px;
+  display:none; flex-direction:column; align-items:center; gap:20px;
+  background:#eceae4;
+}
+.pdf-page-wrapper { position:relative; background:white; box-shadow:0 2px 12px rgba(0,0,0,.1); flex-shrink:0; }
+.pdf-canvas       { display:block; position:relative; z-index:0; }
+.highlights-layer { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:1; }
+.hl-rect { position:absolute; mix-blend-mode:multiply; border-radius:2px; cursor:pointer; pointer-events:auto; }
+.textLayer {
+  position:absolute; top:0; left:0; right:0; bottom:0;
+  overflow:hidden; line-height:1; z-index:2;
+  user-select:text; -webkit-user-select:text;
+}
+.textLayer span {
+  color:transparent; position:absolute; white-space:pre;
+  cursor:text; transform-origin:0% 0%;
+  user-select:text; -webkit-user-select:text;
+}
+.textLayer .endOfContent { display:block; position:absolute; inset:100% 0 0; z-index:-1; cursor:default; user-select:none; }
+.textLayer ::selection { background:rgba(91,106,247,.28); color:transparent; }
+
+/* ── Web Reader ──────────────────────────────────────── */
+#web-reader { flex:1; overflow-y:auto; background:#eceae4; display:none; padding:40px 20px 80px; }
+#article-wrapper {
+  position:relative; max-width:720px; margin:0 auto;
+  background:white; border-radius:4px; box-shadow:0 2px 12px rgba(0,0,0,.08);
+  padding:52px 56px 64px;
+}
+#article-wrapper > .highlights-layer { z-index:10; }
+#article-source-url, #article-heading, #article-body { position:relative; z-index:1; }
+#article-source-url { font-size:12px; color:#bbb; margin-bottom:14px; font-family:'SF Mono','Fira Code',monospace; word-break:break-all; }
+#article-source-url a { color:#bbb; text-decoration:none; }
+#article-source-url a:hover { text-decoration:underline; }
+#article-heading { font-size:26px; font-weight:700; color:#111; line-height:1.3; margin-bottom:32px; padding-bottom:24px; border-bottom:1px solid #f0ede8; position:relative; z-index:1; }
+#article-body { font-size:16px; line-height:1.8; color:#222; }
+#article-body p { margin:0 0 1.2em; }
+#article-body h1 { font-size:22px; font-weight:700; color:#111; margin:2em 0 .75em; }
+#article-body h2 { font-size:19px; font-weight:650; color:#111; margin:1.8em 0 .7em; }
+#article-body h3 { font-size:16px; font-weight:600; color:#222; margin:1.5em 0 .6em; }
+#article-body h4, #article-body h5 { font-size:15px; font-weight:600; color:#333; margin:1.2em 0 .5em; }
+#article-body a { color:#5b6af7; text-decoration:none; }
+#article-body a:hover { text-decoration:underline; }
+#article-body strong, #article-body b { font-weight:650; }
+#article-body em, #article-body i { font-style:italic; }
+#article-body code { background:#f4f2ee; padding:2px 5px; border-radius:3px; font-size:.87em; font-family:'SF Mono','Fira Code','Consolas',monospace; color:#444; }
+#article-body pre { background:#f8f7f4; border:1px solid #eceae4; border-radius:6px; padding:16px 18px; overflow-x:auto; margin:1.5em 0; font-size:13px; line-height:1.6; }
+#article-body pre code { background:none; padding:0; }
+#article-body blockquote { border-left:3px solid #e0ddd6; padding-left:20px; margin:1.5em 0; color:#666; }
+#article-body ul, #article-body ol { padding-left:1.6em; margin:1em 0; }
+#article-body li { margin-bottom:.4em; }
+#article-body img { max-width:100%; border-radius:4px; margin:1.5em auto; display:block; }
+#article-body figure { margin:2em 0; }
+#article-body figcaption { text-align:center; font-size:13px; color:#999; margin-top:8px; }
+#article-body table { border-collapse:collapse; width:100%; margin:1.5em 0; font-size:14px; }
+#article-body td, #article-body th { border:1px solid #e8e5e0; padding:8px 12px; }
+#article-body th { background:#f8f7f4; font-weight:600; }
+
+/* ── Popover ─────────────────────────────────────────── */
+#selection-popover { position:fixed; display:none; z-index:9999; filter:drop-shadow(0 4px 14px rgba(0,0,0,.22)); }
+.pop-inner { background:#1a1a1a; border-radius:10px; padding:6px; display:flex; flex-direction:column; gap:4px; }
+.pop-btn { display:flex; align-items:center; gap:6px; padding:7px 14px; border:none; border-radius:7px; font-size:13px; font-weight:500; cursor:pointer; white-space:nowrap; }
+#ask-btn { background:#5b6af7; color:white; }
+#ask-btn:hover { background:#4a58e6; }
+#cite-open-btn { background:#243028; color:#9fd4b0; display:none; }
+#cite-open-btn:hover { background:#2e3d34; }
+#read-later-sel-btn { background:#2a2838; color:#c4c0e8; }
+#read-later-sel-btn:hover { background:#353348; }
+
+/* ── Sidebar ─────────────────────────────────────────── */
+#sidebar { width:360px; flex-shrink:0; background:#141414; display:flex; flex-direction:column; border-left:1px solid #252525; overflow:hidden; }
+#sidebar-header { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid #252525; flex-shrink:0; }
+#sidebar-title { font-size:14px; font-weight:600; color:#ddd; }
+#disc-count { background:#252525; color:#666; border-radius:10px; padding:2px 8px; font-size:11px; font-weight:500; }
+#disc-list-panel { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+.empty-state { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:40px 24px; text-align:center; }
+.empty-state .e-icon { font-size:30px; }
+.empty-state p { font-size:13px; color:#555; line-height:1.6; }
+.disc-card { background:#1e1e1e; border:1px solid #2a2a2a; border-radius:8px; padding:12px; cursor:pointer; transition:background .1s, border-color .1s; }
+.disc-card:hover  { background:#222; border-color:#383838; }
+.disc-card.active { background:#1d1e36; border-color:#5b6af7; }
+.dc-top  { display:flex; align-items:center; gap:7px; margin-bottom:8px; }
+.dc-dot  { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.dc-meta { font-size:11px; color:#555; font-weight:500; flex:1; }
+.dc-del  { font-size:14px; color:#444; background:none; border:none; cursor:pointer; padding:0 2px; line-height:1; }
+.dc-del:hover { color:#e04040; }
+.dc-quote { font-size:12px; color:#888; font-style:italic; line-height:1.5; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; border-left:2px solid #333; padding-left:8px; margin-bottom:6px; }
+.dc-preview { font-size:12px; color:#666; display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+.dc-unanswered { font-size:11px; color:#7a6a20; background:#332d12; border-radius:4px; padding:1px 6px; display:inline-block; }
+
+/* ── Chat ────────────────────────────────────────────── */
+#chat-panel { flex:1; display:none; flex-direction:column; overflow:hidden; }
+#chat-top { padding:12px 16px; border-bottom:1px solid #252525; display:flex; align-items:flex-start; gap:8px; flex-shrink:0; }
+#back-btn { background:none; border:none; color:#555; font-size:20px; cursor:pointer; line-height:1; padding:2px 4px 2px 0; flex-shrink:0; margin-top:1px; transition:color .1s; }
+#back-btn:hover { color:#ccc; }
+#chat-hl-text { font-size:12px; color:#888; font-style:italic; line-height:1.5; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; border-left:2px solid #333; padding-left:8px; flex:1; }
+#chat-messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:14px; }
+#chat-empty-hint { margin:auto; text-align:center; color:#555; font-size:13px; line-height:1.7; padding:20px; }
+#chat-empty-hint .ceh-icon { font-size:26px; margin-bottom:10px; }
+.chat-msg { display:flex; flex-direction:column; gap:4px; }
+.chat-msg.user      { align-items:flex-end; }
+.chat-msg.assistant { align-items:flex-start; }
+.msg-role { font-size:10px; color:#444; font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
+.msg-body { padding:9px 12px; border-radius:10px; font-size:13px; line-height:1.6; max-width:96%; }
+.chat-msg.user      .msg-body { background:#5b6af7; color:white; border-bottom-right-radius:3px; }
+.chat-msg.assistant .msg-body { background:#1e1e1e; color:#d0d0d0; border:1px solid #2a2a2a; border-bottom-left-radius:3px; }
+.typing-dots { display:flex; gap:4px; padding:4px 2px; }
+.t-dot { width:5px; height:5px; background:#555; border-radius:50%; animation:td 1.2s ease-in-out infinite; }
+.t-dot:nth-child(2) { animation-delay:.15s; }
+.t-dot:nth-child(3) { animation-delay:.3s; }
+@keyframes td { 0%,70%,100%{transform:translateY(0);opacity:.35;} 35%{transform:translateY(-5px);opacity:1;} }
+#chat-input-row { padding:10px 12px; border-top:1px solid #252525; display:flex; align-items:flex-end; gap:8px; flex-shrink:0; }
+#msg-input { flex:1; background:#1e1e1e; border:1px solid #333; border-radius:8px; color:#d0d0d0; font-size:13px; font-family:inherit; padding:8px 10px; resize:none; min-height:36px; max-height:100px; line-height:1.45; }
+#msg-input:focus { outline:none; border-color:#5b6af7; }
+#msg-input::placeholder { color:#444; }
+#send-btn { width:36px; height:36px; background:#5b6af7; color:white; border:none; border-radius:8px; font-size:16px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:background .1s; }
+#send-btn:hover    { background:#4a58e6; }
+#send-btn:disabled { background:#282828; color:#444; cursor:default; }
+</style>
+</head>
+<body>
+
+<!-- Upload Screen -->
+<div id="upload-screen">
+  <div class="upload-container">
+    <div class="drop-zone" id="drop-zone">
+      <div class="dz-icon">📄</div>
+      <h2>Open a research paper</h2>
+      <p>Click to browse or drag &amp; drop a PDF</p>
+    </div>
+    <input type="file" id="pdf-input" accept=".pdf" style="display:none">
+
+    <div class="or-div">or</div>
+
+    <div class="url-row">
+      <input type="text" id="url-input" placeholder="https://anthropic.com/research/…  or arxiv.org/abs/…" />
+      <button id="url-load-btn">Load URL</button>
+    </div>
+    <div id="url-tips">Works with Anthropic, transformer-circuits.pub, distill.pub, arXiv (auto-converts to HTML)</div>
+    <div id="url-error"></div>
+
+    <div id="auth-bar">
+      <div id="auth-status">Connecting…</div>
+      <div id="auth-actions">
+        <button class="auth-btn" id="auth-change-btn" type="button" style="display:none">Change email</button>
+      </div>
+    </div>
+    <div id="auth-email-row">
+      <input type="email" id="auth-email-input" placeholder="your@email.com">
+      <button class="auth-btn primary" id="auth-load-btn" type="button">Load library</button>
+    </div>
+
+    <div id="library">
+      <div class="library-head">
+        <span>Your library</span>
+        <button id="clear-lib">Clear all</button>
+      </div>
+      <div id="lib-cards"></div>
+    </div>
+
+    <div id="read-later">
+      <div class="library-head">
+        <span>Read later</span>
+        <button id="clear-read-later">Clear</button>
+      </div>
+      <div id="read-later-cards"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Main App -->
+<div id="main-app">
+  <div id="viewer-panel">
+    <div id="toolbar">
+      <span id="paper-name">Loading…</span>
+      <span id="source-badge"></span>
+      <button id="return-doc-btn" style="display:none">← Back</button>
+      <button id="read-later-paper-btn" title="Save this paper to Read later">🔖 Read later</button>
+      <button id="new-btn">← Library</button>
+    </div>
+    <div id="reload-note">
+      Highlights restored. Reopen the original to see them positioned on the page.
+    </div>
+    <div id="content-loading">
+      <div class="spinner"></div>
+      <span id="load-status">Loading…</span>
+    </div>
+    <div id="pdf-pages"></div>
+    <div id="web-reader">
+      <div id="article-wrapper">
+        <div class="highlights-layer"></div>
+        <div id="article-source-url"></div>
+        <div id="article-heading"></div>
+        <div id="article-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <span id="sidebar-title">Discussions</span>
+      <span id="disc-count">0</span>
+    </div>
+    <div id="disc-list-panel">
+      <div class="empty-state">
+        <div class="e-icon">💬</div>
+        <p>Select any text to start a discussion with Claude</p>
+      </div>
+    </div>
+    <div id="chat-panel">
+      <div id="chat-top">
+        <button id="back-btn">←</button>
+        <div id="chat-hl-text"></div>
+      </div>
+      <div id="chat-messages"></div>
+      <div id="chat-input-row">
+        <textarea id="msg-input" placeholder="Ask about this highlight…" rows="1"></textarea>
+        <button id="send-btn">↑</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="selection-popover">
+  <div class="pop-inner">
+    <button class="pop-btn" id="ask-btn">✦ Discuss</button>
+    <button class="pop-btn" id="cite-open-btn">📖 Open citation</button>
+    <button class="pop-btn" id="read-later-sel-btn">🔖 Read later</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/store.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mozilla/readability@0.5.0/Readability.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ═══════════════════════════════════════════════════════
+//  PERSISTENCE LAYER  (localStorage)
+// ═══════════════════════════════════════════════════════
+const STORE_KEY = 'paperReader.docs.v1';
+const READ_LATER_KEY = 'paperReader.readLater.v1';
+const SCHEMA_META_KEY = 'paperReader.schema.v1';
+const SCHEMA_VERSION = 2;
+
+// docs = { [docId]: { id, name, mode, badge, url, updated, discussions: [...] } }
+function migrateDoc(doc, docId) {
+  if (!doc || typeof doc !== 'object') return null;
+  const m = { ...doc };
+  let changed = false;
+
+  const setDefault = (key, value) => {
+    if (m[key] === undefined) { m[key] = value; changed = true; }
+  };
+
+  setDefault('id', docId);
+  setDefault('name', docId);
+  setDefault('mode', docId.startsWith('web::') ? 'web' : 'pdf');
+  setDefault('badge', m.mode === 'pdf' ? 'PDF' : 'Web');
+  setDefault('url', null);
+  setDefault('updated', Date.now());
+  setDefault('conversationSummary', null);
+  setDefault('summaryMessageCount', 0);
+
+  if (!Array.isArray(m.discussions)) {
+    m.discussions = [];
+    changed = true;
+  }
+
+  m.discussions = m.discussions.map(d => {
+    if (!d || typeof d !== 'object') { changed = true; return null; }
+    const nd = { ...d };
+    const setDefaultOn = (obj, key, val) => {
+      if (obj[key] === undefined) { obj[key] = val; changed = true; }
+    };
+    setDefaultOn(nd, 'id', Date.now());
+    setDefaultOn(nd, 'txt', '');
+    setDefaultOn(nd, 'mode', m.mode);
+    setDefaultOn(nd, 'pageNum', null);
+    setDefaultOn(nd, 'citationMeta', null);
+    setDefaultOn(nd, 'relRects', []);
+    setDefaultOn(nd, 'color', { bg:'rgba(255,215,0,.45)', dot:'#c9a000' });
+
+    if (!Array.isArray(nd.messages)) {
+      nd.messages = [];
+      changed = true;
+    } else {
+      nd.messages = nd.messages.map(msg => {
+        if (!msg || typeof msg !== 'object') { changed = true; return null; }
+        const nm = { ...msg };
+        if (nm.role !== 'assistant' && nm.role !== 'user') {
+          nm.role = 'user';
+          changed = true;
+        }
+        if (typeof nm.content !== 'string') {
+          nm.content = nm.content == null ? '' : String(nm.content);
+          changed = true;
+        }
+        return nm;
+      }).filter(Boolean);
+    }
+    return nd;
+  }).filter(Boolean);
+
+  return { doc: m, changed };
+}
+
+function migrateStore(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { store: {}, changed: !!raw };
+  }
+  const store = {};
+  let changed = false;
+  for (const [docId, doc] of Object.entries(raw)) {
+    const result = migrateDoc(doc, docId);
+    if (!result) { changed = true; continue; }
+    store[docId] = result.doc;
+    if (result.changed) changed = true;
+  }
+  if (Object.keys(raw).length !== Object.keys(store).length) changed = true;
+  return { store, changed };
+}
+
+function migrateReadLaterList(raw) {
+  if (raw == null) return { items: [], changed: false };
+  if (!Array.isArray(raw)) return { items: [], changed: true };
+  const items = [];
+  let changed = false;
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') { changed = true; continue; }
+    const m = { ...item };
+    if (!m.id) {
+      m.id = 'rl::' + simpleHash(m.url || m.citationText || m.title || String(m.addedAt || Date.now()));
+      changed = true;
+    }
+    if (!m.title) { m.title = 'Untitled'; changed = true; }
+    if (m.url === undefined) { m.url = null; changed = true; }
+    if (m.mode === undefined) { m.mode = m.url ? 'web' : null; changed = true; }
+    if (m.docId === undefined) { m.docId = null; changed = true; }
+    if (m.citationText === undefined) { m.citationText = null; changed = true; }
+    if (m.sourceDoc === undefined) { m.sourceDoc = null; changed = true; }
+    if (m.refText === undefined) { m.refText = null; changed = true; }
+    if (!m.addedAt) { m.addedAt = Date.now(); changed = true; }
+    items.push(m);
+  }
+  if (items.length !== raw.length) changed = true;
+  return { items, changed };
+}
+
+function initStorage() {
+  let anyChanged = false;
+
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const { store, changed } = migrateStore(parsed);
+      if (changed) {
+        localStorage.setItem(STORE_KEY, JSON.stringify(store));
+        anyChanged = true;
+        console.info('Paper Reader: migrated library store to schema v' + SCHEMA_VERSION);
+      }
+    }
+  } catch (e) {
+    console.warn('Paper Reader: library migration skipped — existing data left untouched:', e);
+  }
+
+  try {
+    const raw = localStorage.getItem(READ_LATER_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const { items, changed } = migrateReadLaterList(parsed);
+      if (changed) {
+        localStorage.setItem(READ_LATER_KEY, JSON.stringify(items));
+        anyChanged = true;
+        console.info('Paper Reader: migrated read-later list to schema v' + SCHEMA_VERSION);
+      }
+    }
+  } catch (e) {
+    console.warn('Paper Reader: read-later migration skipped — existing data left untouched:', e);
+  }
+
+  if (anyChanged) {
+    try {
+      localStorage.setItem(SCHEMA_META_KEY, JSON.stringify({
+        version: SCHEMA_VERSION,
+        migratedAt: Date.now(),
+      }));
+    } catch (e) { console.warn('Could not save schema metadata:', e); }
+  }
+}
+
+function loadStore() { return PaperStore.getStore(); }
+
+async function persistCurrentDoc() {
+  if (!currentDocId) return;
+  const store = loadStore();
+  const prior = store[currentDocId];
+  if (prior && prior.discussions && prior.discussions.length > 0 && discussions.length === 0) {
+    console.warn('persistCurrentDoc: refusing to overwrite saved discussions with empty set');
+    return;
+  }
+  const doc = {
+    id: currentDocId,
+    name: docMeta.name,
+    mode: docMeta.mode,
+    badge: docMeta.badge,
+    url: docMeta.url || null,
+    updated: Date.now(),
+    conversationSummary,
+    summaryMessageCount,
+    discussions: discussions.map(d => ({
+      id: d.id, txt: d.txt, mode: d.mode, pageNum: d.pageNum,
+      color: d.color, relRects: d.relRects, messages: d.messages,
+      citationMeta: d.citationMeta || null,
+    })),
+  };
+  try {
+    await PaperStore.saveDoc(doc);
+  } catch (e) {
+    console.warn('Cloud save failed (local backup kept):', e);
+    updateAuthBar(PaperStore.getSyncStatus());
+  }
+}
+function docIdFor(mode, key) {
+  // stable id: web → url, pdf → name+size proxy (name only here)
+  return mode + '::' + key;
+}
+
+// Restore discussions from a saved doc, hardening against any missing fields
+// so a partial record can never blank out a thread or throw.
+function restoreDiscussions(saved) {
+  return (saved || []).map(d => ({
+    ...d,
+    wrapper: null,
+    messages: Array.isArray(d.messages) ? d.messages : [],
+    relRects: Array.isArray(d.relRects) ? d.relRects : [],
+    color: d.color || { bg:'rgba(255,215,0,.45)', dot:'#c9a000' },
+    citationMeta: d.citationMeta || null,
+  }));
+}
+
+function loadDocSummary(saved) {
+  conversationSummary = saved?.conversationSummary || null;
+  summaryMessageCount = saved?.summaryMessageCount || 0;
+  summaryDirty = conversationMessageCount() > summaryMessageCount;
+}
+
+function conversationMessageCount() {
+  return discussions.reduce((n, d) => n + d.messages.filter(m => !m.hidden).length, 0);
+}
+
+function buildSummarySource() {
+  const blocks = [];
+  for (const d of discussions) {
+    const vis = d.messages.filter(m => !m.hidden);
+    if (!vis.length) continue;
+    blocks.push(`[Highlight] "${d.txt.slice(0, 250)}${d.txt.length > 250 ? '…' : ''}"`);
+    for (const m of vis) {
+      const who = m.role === 'user' ? 'Researcher' : 'Assistant';
+      blocks.push(`${who}: ${m.content}`);
+    }
+    blocks.push('');
+  }
+  return blocks.join('\n').trim();
+}
+
+function scheduleSummaryUpdate() {
+  const count = conversationMessageCount();
+  if (!count) return;
+  summaryDirty = count > summaryMessageCount;
+  if (!summaryDirty) return;
+  clearTimeout(_summaryTimer);
+  _summaryTimer = setTimeout(() => { maybeUpdateSummary(false); }, 45000);
+}
+
+async function maybeUpdateSummary(force = false) {
+  if (_summaryInFlight || !currentDocId) return false;
+  const count = conversationMessageCount();
+  if (!count) return false;
+  if (!force && count <= summaryMessageCount) return false;
+
+  const source = buildSummarySource();
+  if (!source) return false;
+
+  _summaryInFlight = true;
+  try {
+    const summary = await callSummarize(source);
+    conversationSummary = summary;
+    summaryMessageCount = count;
+    summaryDirty = false;
+    await persistCurrentDoc();
+    renderLibrary();
+    return true;
+  } catch (e) {
+    console.warn('Conversation summary failed:', e.message);
+    return false;
+  } finally {
+    _summaryInFlight = false;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════
+let pdfDoc = null, discussions = [], activeId = null, pendingSel = null;
+let currentDocId = null, currentMode = null;
+let docMeta = { name:'', mode:'', badge:'', url:null };
+let conversationSummary = null, summaryMessageCount = 0, summaryDirty = false;
+let _summaryTimer = null, _summaryInFlight = false;
+let pendingCitation = null, returnToDocId = null, returnToDocName = null;
+
+// Full extracted text of the current paper (for context + caching).
+// Capped so we never blow past the long-context surcharge threshold.
+let paperText = '';
+const MAX_PAPER_CHARS = 600000;   // ~150k tokens, safely under the 200k cap
+
+const COLORS = [
+  { bg:'rgba(255,215,0,.45)',   dot:'#c9a000' },
+  { bg:'rgba(80,210,130,.45)',  dot:'#1a9950' },
+  { bg:'rgba(100,165,255,.45)', dot:'#2e72e0' },
+  { bg:'rgba(255,110,150,.45)', dot:'#d02060' },
+  { bg:'rgba(195,115,255,.45)', dot:'#8830d8' },
+  { bg:'rgba(255,145,60,.45)',  dot:'#d05010' },
+];
+function nextColor() { return COLORS[discussions.length % COLORS.length]; }
+
+// ═══════════════════════════════════════════════════════
+//  LIBRARY  (upload screen)
+// ═══════════════════════════════════════════════════════
+function renderLibrary() {
+  const store = loadStore();
+  const docs = Object.values(store).sort((a,b) => b.updated - a.updated);
+  const lib = document.getElementById('library');
+  const cards = document.getElementById('lib-cards');
+
+  if (!docs.length) { lib.classList.remove('show'); return; }
+  lib.classList.add('show');
+  cards.innerHTML = '';
+
+  for (const doc of docs) {
+    const n = doc.discussions.length;
+    const card = document.createElement('div');
+    card.className = 'lib-card';
+    card.innerHTML = `
+      <div class="lib-icon">${doc.mode === 'pdf' ? '📄' : '🌐'}</div>
+      <div class="lib-info">
+        <div class="lib-name">${esc(doc.name)}</div>
+        ${doc.conversationSummary ? `<div class="lib-summary">${esc(doc.conversationSummary)}</div>` : ''}
+        <div class="lib-meta">${n} discussion${n!==1?'s':''} · ${timeAgo(doc.updated)}</div>
+      </div>
+      <button class="lib-del" title="Delete">×</button>`;
+    card.addEventListener('click', e => {
+      if (e.target.classList.contains('lib-del')) return;
+      reopenDoc(doc.id);
+    });
+    card.querySelector('.lib-del').addEventListener('click', async e => {
+      e.stopPropagation();
+      await PaperStore.deleteDoc(doc.id);
+      renderLibrary();
+    });
+    cards.appendChild(card);
+  }
+}
+document.getElementById('clear-lib').addEventListener('click', async () => {
+  if (confirm('Delete all saved documents and discussions?')) {
+    await PaperStore.clearLibrary();
+    renderLibrary();
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+//  READ LATER
+// ═══════════════════════════════════════════════════════
+function simpleHash(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return Math.abs(h).toString(36);
+}
+async function addToReadLater(item) {
+  const id = item.id || (item.url ? 'rl::' + simpleHash(item.url) : 'rl::' + simpleHash(item.citationText || item.title));
+  const added = await PaperStore.addReadLater({ ...item, id });
+  if (added) renderReadLater();
+  return added;
+}
+function renderReadLater() {
+  const items = PaperStore.getReadLater();
+  const section = document.getElementById('read-later');
+  const cards = document.getElementById('read-later-cards');
+  if (!items.length) { section.classList.remove('show'); return; }
+  section.classList.add('show');
+  cards.innerHTML = '';
+  for (const item of items) {
+    const card = document.createElement('div');
+    card.className = 'lib-card rl-card';
+    const canOpen = !!(item.url || item.docId);
+    card.innerHTML = `
+      <div class="lib-icon">${item.url ? '🔗' : (item.docId ? '📄' : '📌')}</div>
+      <div class="lib-info">
+        <div class="lib-name">${esc(item.title)}</div>
+        ${item.sourceDoc ? `<div class="rl-source">from ${esc(item.sourceDoc)}</div>` : ''}
+        ${item.citationText ? `<div class="lib-summary">${esc(item.citationText.slice(0, 120))}${item.citationText.length > 120 ? '…' : ''}</div>` : ''}
+        ${!canOpen ? '<div class="rl-unresolved">No URL — open source paper to resolve</div>' : ''}
+        <div class="lib-meta">${timeAgo(item.addedAt)}</div>
+      </div>
+      <button class="lib-del" title="Remove">×</button>`;
+    card.addEventListener('click', e => {
+      if (e.target.classList.contains('lib-del')) return;
+      openReadLaterItem(item);
+    });
+    card.querySelector('.lib-del').addEventListener('click', async e => {
+      e.stopPropagation();
+      await PaperStore.removeReadLater(item.id);
+      renderReadLater();
+    });
+    cards.appendChild(card);
+  }
+}
+async function openReadLaterItem(item) {
+  if (item.url) {
+    document.getElementById('url-input').value = item.url;
+    await loadWebPage(item.url);
+    return;
+  }
+  if (item.docId) {
+    await reopenDoc(item.docId);
+    return;
+  }
+  alert('This citation could not be resolved to a URL. Try selecting it again in the source paper.');
+}
+document.getElementById('clear-read-later').addEventListener('click', async () => {
+  if (confirm('Clear your Read later list?')) {
+    await PaperStore.clearReadLater();
+    renderReadLater();
+  }
+});
+
+// Reopen a saved doc. For web docs we can re-fetch + reposition highlights.
+// For PDFs we can't re-render without the file, so we show discussions in a
+// restored (list-only) state and invite re-opening the file.
+async function reopenDoc(docId) {
+  const store = loadStore();
+  const doc = store[docId];
+  if (!doc) return;
+
+  if (doc.mode === 'web' && doc.url) {
+    // full re-fetch so highlights paint in place
+    document.getElementById('url-input').value = doc.url;
+    loadWebPage(doc.url, docId);
+    return;
+  }
+
+  // PDF: try to pull the stored bytes from IndexedDB and re-render fully.
+  startApp(doc.name, doc.badge || 'PDF');
+  currentMode = doc.mode;
+  currentDocId = docId;
+  docMeta = { name:doc.name, mode:doc.mode, badge:doc.badge, url:doc.url };
+  discussions = restoreDiscussions(doc.discussions);
+  loadDocSummary(doc);
+
+  if (doc.mode === 'pdf') {
+    setStatus('Loading saved PDF…');
+    const blob = await PaperStore.getPdf(docId);
+    if (blob) {
+      try {
+        const buf = await blob.arrayBuffer();
+        await renderFromBuffer(buf);
+        restoreHighlightsForLoadedPages();
+        renderList();
+        return;                      // ← full auto-restore, highlights in place
+      } catch(e) { console.warn('Stored PDF failed to render:', e); }
+    }
+    // Fallback: bytes missing (e.g. cleared) → list-only + reopen prompt
+    document.getElementById('content-loading').style.display = 'none';
+    document.getElementById('reload-note').style.display = 'block';
+    document.getElementById('reload-note').innerHTML =
+      `Saved file unavailable. Discussions for “${esc(doc.name)}” restored — ` +
+      `<button id="reopen-file">open the PDF again</button> to see highlights on the page.`;
+    const rf = document.getElementById('reopen-file');
+    if (rf) rf.addEventListener('click', () => document.getElementById('pdf-input').click());
+    showList();
+    return;
+  }
+
+  // web without url (rare) → list only
+  document.getElementById('content-loading').style.display = 'none';
+  document.getElementById('reload-note').style.display = 'block';
+  document.getElementById('reload-note').innerHTML = `Discussions restored.`;
+  showList();
+}
+
+// ═══════════════════════════════════════════════════════
+//  PDF
+// ═══════════════════════════════════════════════════════
+const dropZone  = document.getElementById('drop-zone');
+const fileInput = document.getElementById('pdf-input');
+
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => { if (e.target.files[0]) loadPDF(e.target.files[0]); });
+dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f && f.type === 'application/pdf') loadPDF(f);
+});
+
+async function loadPDF(file) {
+  const name = file.name.replace(/\.pdf$/i,'');
+  const id = docIdFor('pdf', name + ':' + file.size);
+  startApp(name, 'PDF');
+  currentMode = 'pdf'; currentDocId = id;
+  docMeta = { name, mode:'pdf', badge:'PDF', url:null };
+
+  // restore prior discussions for this doc, if any
+  const store = loadStore();
+  const saved = store[id];
+  discussions = saved ? restoreDiscussions(saved.discussions) : [];
+  loadDocSummary(saved);
+
+  setStatus('Rendering PDF…');
+  const buf = await file.arrayBuffer();
+
+  // Persist the bytes so this PDF reopens automatically from the library.
+  // (Copy the buffer before pdf.js detaches it.)
+  PaperStore.putPdf(id, new Blob([buf.slice(0)], { type:'application/pdf' }))
+    .catch(e => { console.warn('PDF cloud upload failed:', e); updateAuthBar(PaperStore.getSyncStatus()); });
+
+  await renderFromBuffer(buf);
+  restoreHighlightsForLoadedPages();
+  renderList();
+  await persistCurrentDoc();
+  renderLibrary();
+}
+
+// Render a PDF from an ArrayBuffer (shared by fresh open and library reopen)
+async function renderFromBuffer(buf) {
+  pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+  await renderPDFPages();
+}
+
+async function renderPDFPages() {
+  const container = document.getElementById('pdf-pages');
+  container.innerHTML = '';
+  paperText = '';
+  const textChunks = [];
+  for (let i = 1; i <= pdfDoc.numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const vp   = page.getViewport({ scale: 1.5 });
+
+    const wrap = document.createElement('div');
+    wrap.className = 'pdf-page-wrapper';
+    wrap.dataset.page = i;
+    wrap.style.width  = vp.width  + 'px';
+    wrap.style.height = vp.height + 'px';
+
+    const canvas = document.createElement('canvas');
+    canvas.className = 'pdf-canvas';
+    canvas.width = vp.width; canvas.height = vp.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+
+    const hlLayer  = document.createElement('div'); hlLayer.className  = 'highlights-layer';
+    const txtLayer = document.createElement('div'); txtLayer.className = 'textLayer';
+    txtLayer.style.width = vp.width + 'px'; txtLayer.style.height = vp.height + 'px';
+
+    try {
+      const tc   = await page.getTextContent();
+      // collect text for full-paper context (reuse the same extraction)
+      const pageStr = tc.items.map(it => it.str).join(' ');
+      textChunks.push(`\n\n[Page ${i}]\n${pageStr}`);
+      const task = pdfjsLib.renderTextLayer({ textContentSource: tc, container: txtLayer, viewport: vp, textDivs: [] });
+      await (task && task.promise ? task.promise : task);
+    } catch(e) { console.warn('Text layer p.'+i, e); }
+
+    wrap.appendChild(canvas); wrap.appendChild(hlLayer); wrap.appendChild(txtLayer);
+    container.appendChild(wrap);
+    if (i === 1) showViewer('pdf');
+  }
+  paperText = textChunks.join('').slice(0, MAX_PAPER_CHARS);
+}
+
+function restoreHighlightsForLoadedPages() {
+  for (const d of discussions) {
+    if (d.mode !== 'pdf') continue;
+    const wrap = document.querySelector(`.pdf-page-wrapper[data-page="${d.pageNum}"]`);
+    if (wrap) { d.wrapper = wrap; paintHighlight(d); }
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  URL / WEB
+// ═══════════════════════════════════════════════════════
+document.getElementById('url-load-btn').addEventListener('click', () => {
+  const v = document.getElementById('url-input').value.trim();
+  if (v) loadWebPage(v);
+});
+document.getElementById('url-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const v = e.target.value.trim(); if(v) loadWebPage(v); }
+});
+
+async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
+  let url = rawUrl;
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  url = smartRewrite(url);
+
+  const errEl = document.getElementById('url-error');
+  errEl.style.display = 'none';
+
+  let hostname;
+  try { hostname = new URL(url).hostname; } catch(e) { hostname = url; }
+
+  const id = knownDocId || docIdFor('web', url);
+  startApp(hostname, 'Web');
+  currentMode = 'web'; currentDocId = id;
+  docMeta = { name:hostname, mode:'web', badge:'Web', url };
+
+  const store = loadStore();
+  const saved = store[id];
+  discussions = saved ? restoreDiscussions(saved.discussions) : [];
+  loadDocSummary(saved);
+
+  try {
+    setStatus('Fetching…');
+    const html = await fetchViaProxy(url);
+    setStatus('Extracting article…');
+
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    let base = doc.querySelector('base');
+    if (!base) { base = doc.createElement('base'); doc.head.prepend(base); }
+    base.href = url;
+
+    let title = '', content = '';
+    if (typeof Readability !== 'undefined') {
+      try {
+        const art = new Readability(doc).parse();
+        if (art && art.content) { title = art.title; content = art.content; }
+      } catch(e) { console.warn('Readability failed', e); }
+    }
+    if (!content) {
+      ['script','style','nav','footer','header','aside'].forEach(t =>
+        doc.querySelectorAll(t).forEach(el => el.remove()));
+      title   = doc.querySelector('title')?.textContent?.trim() || url;
+      content = doc.querySelector('main,article,[role="main"]')?.innerHTML
+             || doc.body?.innerHTML || '<p>Could not extract content.</p>';
+    }
+
+    docMeta.name = title || hostname;
+    renderWebArticle(title, content, url);
+    showViewer('web');
+    restoreWebHighlights();
+    renderList();
+    await persistCurrentDoc();
+    if (citationContext) await finishCitationNavigation(citationContext);
+
+  } catch(err) {
+    console.error(err);
+    if (citationContext) throw err;
+    backToUpload();
+    errEl.innerHTML = `Couldn't fetch: <strong>${esc(err.message)}</strong><br>
+      Try the paper's PDF, or check the URL.`;
+    errEl.style.display = 'block';
+  }
+}
+
+function smartRewrite(url) {
+  const ax = url.match(/arxiv\.org\/abs\/([\d.]+)/);
+  if (ax) return `https://ar5iv.labs.arxiv.org/html/${ax[1]}`;
+  return url;
+}
+
+async function fetchViaProxy(url) {
+  const proxies = [
+    async () => {
+      const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+        { signal: AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined });
+      const d = await r.json();
+      if (!d.contents || d.contents.length < 200) throw new Error('empty');
+      return d.contents;
+    },
+    async () => {
+      const r = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+        { signal: AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.text();
+    }
+  ];
+  for (const proxy of proxies) {
+    try { return await proxy(); } catch(e) { console.warn('Proxy failed:', e); }
+  }
+  throw new Error('All proxies failed. The site may block external fetching.');
+}
+
+function renderWebArticle(title, html, url) {
+  document.getElementById('article-heading').textContent = title || 'Untitled';
+  document.getElementById('article-source-url').innerHTML =
+    `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`;
+  document.getElementById('article-body').innerHTML = html;
+  document.getElementById('paper-name').textContent = title || url;
+  document.querySelectorAll('#article-body script').forEach(s => s.remove());
+  // capture full text for context + caching
+  const bodyText = document.getElementById('article-body').innerText || '';
+  paperText = (`${title || ''}\n\n${bodyText}`).slice(0, MAX_PAPER_CHARS);
+}
+
+function restoreWebHighlights() {
+  const aw = document.getElementById('article-wrapper');
+  for (const d of discussions) {
+    if (d.mode !== 'web') continue;
+    d.wrapper = aw;
+    paintHighlight(d);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  APP LIFECYCLE
+// ═══════════════════════════════════════════════════════
+function startApp(name, badge) {
+  document.getElementById('upload-screen').style.display = 'none';
+  document.getElementById('main-app').style.display = 'flex';
+  document.getElementById('content-loading').style.display = 'flex';
+  document.getElementById('pdf-pages').style.display = 'none';
+  document.getElementById('web-reader').style.display = 'none';
+  document.getElementById('reload-note').style.display = 'none';
+  document.getElementById('paper-name').textContent = name;
+  document.getElementById('source-badge').textContent = badge;
+  activeId = null; pendingSel = null; paperText = '';
+}
+function setStatus(msg) { document.getElementById('load-status').textContent = msg; }
+function showViewer(mode) {
+  document.getElementById('content-loading').style.display = 'none';
+  if (mode === 'pdf') document.getElementById('pdf-pages').style.display = 'flex';
+  else                document.getElementById('web-reader').style.display = 'block';
+}
+
+// ═══════════════════════════════════════════════════════
+//  CITATION RESOLUTION
+// ═══════════════════════════════════════════════════════
+function extractReferencesSection(text) {
+  if (!text) return '';
+  const markers = [
+    /\n\s*References\s*\n/i,
+    /\n\s*Bibliography\s*\n/i,
+    /\n\s*REFERENCES\s*\n/,
+    /\n\s*Works\s+Cited\s*\n/i,
+  ];
+  for (const re of markers) {
+    const m = text.match(re);
+    if (m) return text.slice(m.index + m[0].length);
+  }
+  return '';
+}
+
+function resolveReferenceEntry(entryText) {
+  const entry = entryText.replace(/\s+/g, ' ').trim();
+  const url = entry.match(/https?:\/\/[^\s\]\),]+/i);
+  if (url) return { url: url[0].replace(/[.,;]+$/, ''), label: entry.slice(0, 140), refText: entry };
+
+  const arxiv = entry.match(/arxiv[:\s]*(?:\/abs\/)?([\d.]+(?:v\d+)?)/i);
+  if (arxiv) return { url: `https://arxiv.org/abs/${arxiv[1]}`, label: entry.slice(0, 140), refText: entry };
+
+  const doi = entry.match(/(?:doi[:\s]*)?(10\.\d{4,9}\/[^\s\]\),]+)/i);
+  if (doi) return { url: `https://doi.org/${doi[1].replace(/[.,;]+$/, '')}`, label: entry.slice(0, 140), refText: entry };
+
+  return { url: null, label: entry.slice(0, 140), refText: entry, unresolved: true };
+}
+
+function findReferenceInPaper(num) {
+  const refSection = extractReferencesSection(paperText);
+  if (!refSection) return null;
+
+  const patterns = [
+    new RegExp(`\\[${num}\\]\\s*[^\\[]*`, 'i'),
+    new RegExp(`^\\s*${num}\\.\\s+(.+)$`, 'm'),
+    new RegExp(`^\\s*${num}\\)\\s+(.+)$`, 'm'),
+    new RegExp(`^\\s*${num}\\s+([A-Z].+)$`, 'm'),
+  ];
+  for (const p of patterns) {
+    const m = refSection.match(p);
+    if (m) return resolveReferenceEntry(m[0] || m[1]);
+  }
+  return null;
+}
+
+function findReferenceByAuthorYear(author, year) {
+  const refSection = extractReferencesSection(paperText);
+  if (!refSection) return null;
+  const last = author.replace(/\s+et\s+al\.?/i, '').split(/\s+/).pop();
+  if (!last) return null;
+  const re = new RegExp(`[^\\n]*\\b${last}\\b[^\\n]*\\b${year}\\b[^\\n]*`, 'i');
+  const m = refSection.match(re);
+  if (m) return resolveReferenceEntry(m[0]);
+  return null;
+}
+
+function parseCitation(text) {
+  const t = text.trim();
+  if (!t) return null;
+
+  const urlMatch = t.match(/https?:\/\/[^\s\]\),]+/i);
+  if (urlMatch) {
+    const url = urlMatch[0].replace(/[.,;]+$/, '');
+    return { url, label: t.slice(0, 140), refText: t };
+  }
+
+  const arxivAbs = t.match(/arxiv\.org\/abs\/([\d.]+(?:v\d+)?)/i);
+  if (arxivAbs) return { url: `https://arxiv.org/abs/${arxivAbs[1]}`, label: t, refText: t };
+
+  const arxivId = t.match(/arXiv:\s*([\d.]+(?:v\d+)?)/i);
+  if (arxivId) return { url: `https://arxiv.org/abs/${arxivId[1]}`, label: t, refText: t };
+
+  const doiMatch = t.match(/(?:doi[:\s]*)?(10\.\d{4,9}\/[^\s\]\),]+)/i);
+  if (doiMatch) {
+    const doi = doiMatch[1].replace(/[.,;]+$/, '');
+    return { url: `https://doi.org/${doi}`, label: t, refText: t };
+  }
+
+  const bracketMatch = t.match(/\[(\d{1,3})\]/);
+  if (bracketMatch) {
+    const ref = findReferenceInPaper(+bracketMatch[1]);
+    if (ref) return { ...ref, label: t };
+  }
+
+  const parenNum = t.match(/\((\d{1,3})\)/);
+  if (parenNum) {
+    const ref = findReferenceInPaper(+parenNum[1]);
+    if (ref) return { ...ref, label: t };
+  }
+
+  const authorYear = t.match(/([A-Z][A-Za-z\-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][A-Za-z\-]+))*)\s*[\(,]\s*(\d{4})/);
+  if (authorYear) {
+    const ref = findReferenceByAuthorYear(authorYear[1], authorYear[2]);
+    if (ref) return { ...ref, label: t };
+  }
+
+  if (/^\[\d{1,3}\]$/.test(t)) {
+    const ref = findReferenceInPaper(+t.slice(1, -1));
+    if (ref) return { ...ref, label: t };
+  }
+
+  return null;
+}
+
+function updatePopoverButtons() {
+  const citeBtn = document.getElementById('cite-open-btn');
+  if (pendingCitation?.url) {
+    citeBtn.style.display = 'flex';
+    citeBtn.textContent = '📖 Open citation';
+  } else {
+    citeBtn.style.display = 'none';
+  }
+}
+
+function updateReturnButton() {
+  const btn = document.getElementById('return-doc-btn');
+  if (returnToDocId && returnToDocName) {
+    btn.style.display = 'inline-block';
+    btn.textContent = `← ${returnToDocName.length > 28 ? returnToDocName.slice(0, 28) + '…' : returnToDocName}`;
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+async function finishCitationNavigation(ctx) {
+  returnToDocId = ctx.parentDocId;
+  returnToDocName = ctx.parentName;
+  updateReturnButton();
+
+  const d = {
+    id: Date.now(),
+    txt: `Citation: ${ctx.citationText}`,
+    mode: currentMode,
+    pageNum: null,
+    color: nextColor(),
+    wrapper: currentMode === 'web' ? document.getElementById('article-wrapper') : null,
+    relRects: [],
+    messages: [],
+    citationMeta: {
+      parentDocId: ctx.parentDocId,
+      parentName: ctx.parentName,
+      citationText: ctx.citationText,
+      refText: ctx.refText || '',
+    },
+  };
+  discussions.push(d);
+  await persistCurrentDoc();
+  renderList();
+  openChat(d.id);
+}
+
+async function openCitationPaper() {
+  if (!pendingSel || !pendingCitation?.url) return;
+  hidePopover();
+  window.getSelection()?.removeAllRanges();
+
+  const ctx = {
+    parentDocId: currentDocId,
+    parentName: docMeta.name,
+    citationText: pendingSel.txt,
+    refText: pendingCitation.refText || '',
+    url: pendingCitation.url,
+  };
+  const citeLabel = pendingCitation.label;
+
+  pendingSel = null;
+  pendingCitation = null;
+  await maybeUpdateSummary(true);
+  await persistCurrentDoc();
+
+  try {
+    await loadWebPage(ctx.url, null, ctx);
+  } catch (e) {
+    console.error(e);
+    await addToReadLater({
+      title: citeLabel || ctx.citationText,
+      url: ctx.url,
+      citationText: ctx.citationText,
+      sourceDoc: ctx.parentName,
+      refText: ctx.refText,
+    });
+    alert(`Couldn't load the cited paper. It was added to Read later.`);
+    if (ctx.parentDocId) await reopenDoc(ctx.parentDocId);
+  }
+}
+
+async function addSelectionToReadLater() {
+  if (!pendingSel) return;
+  hidePopover();
+  window.getSelection()?.removeAllRanges();
+
+  const cite = pendingCitation || parseCitation(pendingSel.txt);
+  const added = await addToReadLater({
+    title: cite?.label || pendingSel.txt.slice(0, 80),
+    url: cite?.url || null,
+    citationText: pendingSel.txt,
+    sourceDoc: docMeta.name,
+    refText: cite?.refText || null,
+    docId: cite?.url ? null : currentDocId,
+    mode: cite?.url ? 'web' : docMeta.mode,
+  });
+
+  pendingSel = null;
+  pendingCitation = null;
+  if (added) setStatus('Added to Read later');
+}
+
+// ═══════════════════════════════════════════════════════
+//  TEXT SELECTION
+// ═══════════════════════════════════════════════════════
+document.addEventListener('mouseup', e => {
+  if (e.target.closest('#selection-popover') || e.target.closest('#sidebar')) return;
+  setTimeout(() => {
+    const sel = window.getSelection();
+    const txt = sel?.toString().trim();
+    if (!txt) { hidePopover(); return; }
+
+    const range    = sel.getRangeAt(0);
+    const selEl    = range.commonAncestorContainer.nodeType === 3
+                     ? range.commonAncestorContainer.parentElement
+                     : range.commonAncestorContainer;
+    const rawRects = Array.from(range.getClientRects()).filter(r => r.width > 1);
+    if (!rawRects.length) { hidePopover(); return; }
+
+    pendingCitation = parseCitation(txt);
+    if (txt.length < 5 && !pendingCitation) { hidePopover(); return; }
+
+    const pageWrap = selEl.closest('.pdf-page-wrapper');
+    if (pageWrap) {
+      const pr = pageWrap.getBoundingClientRect();
+      pendingSel = {
+        txt, mode:'pdf', pageNum:+pageWrap.dataset.page, wrapper:pageWrap,
+        relRects: rawRects.map(r => ({ left:r.left-pr.left, top:r.top-pr.top, width:r.width, height:r.height }))
+      };
+      positionPopover(rawRects[rawRects.length-1]);
+      updatePopoverButtons();
+      return;
+    }
+
+    const aw = document.getElementById('article-wrapper');
+    if (aw && selEl.closest('#article-body, #article-heading')) {
+      const ar = aw.getBoundingClientRect();
+      pendingSel = {
+        txt, mode:'web', pageNum:null, wrapper:aw,
+        relRects: rawRects.map(r => ({ left:r.left-ar.left, top:r.top-ar.top, width:r.width, height:r.height }))
+      };
+      positionPopover(rawRects[rawRects.length-1]);
+      updatePopoverButtons();
+      return;
+    }
+    hidePopover();
+  }, 5);
+});
+document.addEventListener('mousedown', e => { if (!e.target.closest('#selection-popover')) hidePopover(); });
+
+function positionPopover(last) {
+  const pop = document.getElementById('selection-popover');
+  pop.style.display = 'block';
+  requestAnimationFrame(() => {
+    const pw = pop.offsetWidth, ph = pop.offsetHeight;
+    let left = last.right - pw/2, top = last.bottom + 10;
+    if (left < 8) left = 8;
+    if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+    if (top  + ph > window.innerHeight - 8) top = last.top - ph - 8;
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+  });
+}
+function hidePopover() {
+  document.getElementById('selection-popover').style.display = 'none';
+  pendingCitation = null;
+}
+
+// ═══════════════════════════════════════════════════════
+//  CREATE DISCUSSION  (no auto-answer — waits for question)
+// ═══════════════════════════════════════════════════════
+document.getElementById('ask-btn').addEventListener('click', () => {
+  if (!pendingSel) return;
+  hidePopover();
+  window.getSelection()?.removeAllRanges();
+
+  const d = { id:Date.now(), txt:pendingSel.txt, mode:pendingSel.mode,
+               pageNum:pendingSel.pageNum, color:nextColor(), wrapper:pendingSel.wrapper,
+               relRects:pendingSel.relRects, messages:[] };
+  discussions.push(d);
+  pendingSel = null;
+  pendingCitation = null;
+
+  paintHighlight(d);
+  persistCurrentDoc();
+  openChat(d.id);   // opens empty chat with the passage + input focused — NO auto-explain
+});
+document.getElementById('cite-open-btn').addEventListener('click', () => { openCitationPaper(); });
+document.getElementById('read-later-sel-btn').addEventListener('click', () => { addSelectionToReadLater(); });
+document.getElementById('read-later-paper-btn').addEventListener('click', async () => {
+  if (!currentDocId) return;
+  const added = await addToReadLater({
+    id: 'rl::' + currentDocId,
+    title: docMeta.name,
+    url: docMeta.url,
+    mode: docMeta.mode,
+    docId: currentDocId,
+  });
+  if (added) setStatus('Added to Read later');
+});
+document.getElementById('return-doc-btn').addEventListener('click', async () => {
+  if (!returnToDocId) return;
+  const target = returnToDocId;
+  const targetName = returnToDocName;
+  returnToDocId = null;
+  returnToDocName = null;
+  updateReturnButton();
+  await maybeUpdateSummary(true);
+  persistCurrentDoc();
+  await reopenDoc(target);
+});
+
+function paintHighlight(d) {
+  const layer = d.wrapper?.querySelector('.highlights-layer');
+  if (!layer) return;
+  for (const r of d.relRects) {
+    const div = document.createElement('div');
+    div.className = 'hl-rect';
+    Object.assign(div.style, { left:r.left+'px', top:r.top+'px', width:r.width+'px', height:r.height+'px', background:d.color.bg });
+    div.addEventListener('click', () => openChat(d.id));
+    layer.appendChild(div);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  DISCUSSION LIST
+// ═══════════════════════════════════════════════════════
+function renderList() {
+  const panel = document.getElementById('disc-list-panel');
+  document.getElementById('disc-count').textContent = discussions.length;
+  panel.innerHTML = '';
+  if (!discussions.length) {
+    panel.innerHTML = `<div class="empty-state"><div class="e-icon">💬</div>
+      <p>Select any text to start a discussion with Claude</p></div>`;
+    return;
+  }
+  for (const d of discussions) {
+    const vis  = d.messages.filter(m => !m.hidden);
+    const last = vis[vis.length-1];
+    const lbl  = d.mode === 'pdf' ? `Page ${d.pageNum}` : 'Web';
+    const card = document.createElement('div');
+    card.className = 'disc-card' + (activeId === d.id ? ' active' : '');
+    card.innerHTML = `
+      <div class="dc-top">
+        <div class="dc-dot" style="background:${d.color.dot}"></div>
+        <span class="dc-meta">${lbl} · ${vis.length} msg</span>
+        <button class="dc-del" title="Delete">×</button>
+      </div>
+      <div class="dc-quote">${esc(d.txt.slice(0,110))}${d.txt.length>110?'…':''}</div>
+      ${ last ? `<div class="dc-preview">${esc(last.content.slice(0,70))}…</div>`
+              : `<span class="dc-unanswered">No question yet</span>` }`;
+    card.addEventListener('click', e => {
+      if (e.target.classList.contains('dc-del')) return;
+      openChat(d.id);
+    });
+    card.querySelector('.dc-del').addEventListener('click', e => {
+      e.stopPropagation(); deleteDiscussion(d.id);
+    });
+    panel.appendChild(card);
+  }
+}
+
+function deleteDiscussion(id) {
+  const d = discussions.find(x => x.id === id);
+  if (d && d.wrapper) {
+    // remove painted rects for this highlight (repaint all to be safe)
+    const layer = d.wrapper.querySelector('.highlights-layer');
+    if (layer) layer.innerHTML = '';
+  }
+  discussions = discussions.filter(x => x.id !== id);
+  // repaint remaining on this wrapper
+  const wraps = new Set(discussions.map(x => x.wrapper).filter(Boolean));
+  wraps.forEach(w => { const l = w.querySelector('.highlights-layer'); if (l) l.innerHTML=''; });
+  discussions.forEach(x => { if (x.wrapper) paintHighlight(x); });
+  persistCurrentDoc();
+  if (activeId === id) showList(); else renderList();
+}
+
+// ═══════════════════════════════════════════════════════
+//  CHAT
+// ═══════════════════════════════════════════════════════
+function openChat(id) {
+  activeId = id;
+  const d = discussions.find(x => x.id === id); if (!d) return;
+  document.getElementById('disc-list-panel').style.display = 'none';
+  document.getElementById('chat-panel').style.display = 'flex';
+  document.getElementById('chat-hl-text').textContent =
+    `"${d.txt.slice(0,180)}${d.txt.length>180?'…':''}"`;
+  rebuildChat(d);
+  const input = document.getElementById('msg-input');
+  input.focus();
+}
+function showList() {
+  activeId = null;
+  document.getElementById('chat-panel').style.display = 'none';
+  document.getElementById('disc-list-panel').style.display = 'flex';
+  renderList();
+}
+document.getElementById('back-btn').addEventListener('click', showList);
+
+function rebuildChat(d) {
+  const box = document.getElementById('chat-messages');
+  box.innerHTML = '';
+  const vis = d.messages.filter(m => !m.hidden);
+  if (!vis.length) {
+    const citeHint = d.citationMeta
+      ? `Opened from a citation in “${esc(d.citationMeta.parentName)}”.<br>Ask anything about this paper.`
+      : `Ask anything about this highlight.<br>Claude has the context of your earlier highlights in this document.`;
+    box.innerHTML = `<div id="chat-empty-hint">
+      <div class="ceh-icon">✦</div>
+      ${citeHint}
+    </div>`;
+    return;
+  }
+  vis.forEach(m => addMsg(m.role, m.content));
+  box.scrollTop = box.scrollHeight;
+}
+function addMsg(role, content, typing=false) {
+  const box = document.getElementById('chat-messages');
+  const hint = document.getElementById('chat-empty-hint');
+  if (hint) hint.remove();
+  const div = document.createElement('div');
+  div.className = `chat-msg ${role}`;
+  div.innerHTML = typing
+    ? `<div class="msg-role">${role==='assistant'?'Claude':'You'}</div>
+       <div class="msg-body"><div class="typing-dots"><div class="t-dot"></div><div class="t-dot"></div><div class="t-dot"></div></div></div>`
+    : `<div class="msg-role">${role==='assistant'?'Claude':'You'}</div>
+       <div class="msg-body">${md(esc(content))}</div>`;
+  box.appendChild(div); box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+// Build cross-highlight context from OTHER discussions in this doc
+function buildDocContext(currentId) {
+  const others = discussions.filter(d => d.id !== currentId && d.messages.some(m => !m.hidden));
+  if (!others.length) return '';
+  let ctx = `\n\nEarlier highlights and discussions from THIS SAME DOCUMENT (the researcher may build on them):\n`;
+  others.forEach((d, i) => {
+    ctx += `\n[Highlight ${i+1}] "${d.txt.slice(0,200)}${d.txt.length>200?'…':''}"\n`;
+    const vis = d.messages.filter(m => !m.hidden);
+    vis.forEach(m => {
+      ctx += `  ${m.role === 'user' ? 'Researcher' : 'You'}: ${m.content.slice(0,300)}${m.content.length>300?'…':''}\n`;
+    });
+  });
+  return ctx;
+}
+
+// Locate the highlight inside the full paper text and return the surrounding
+// window. Used as a fallback when the full paper is too big to send, and also
+// helps Claude resolve references like "this", "the above equation", etc.
+function findNearbyContext(highlightText, radius = 1500) {
+  if (!paperText) return '';
+  // normalize whitespace for a forgiving match
+  const norm = s => s.replace(/\s+/g, ' ').trim();
+  const hay = norm(paperText);
+  const needle = norm(highlightText).slice(0, 120); // first chunk is enough to locate
+  let idx = hay.indexOf(needle);
+  if (idx === -1) {
+    // try a shorter, distinctive slice
+    idx = hay.indexOf(needle.slice(0, 50));
+  }
+  if (idx === -1) return '';
+  const start = Math.max(0, idx - radius);
+  const end   = Math.min(hay.length, idx + needle.length + radius);
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < hay.length ? '…' : '';
+  return prefix + hay.slice(start, end) + suffix;
+}
+
+// Decide what document context to attach, given the "full if it fits" policy.
+// Returns { block, cacheable } where block is the text to send.
+function buildPaperBlock() {
+  // Rough token estimate: ~4 chars/token. Send full paper if under ~150k tokens.
+  if (paperText && paperText.length <= MAX_PAPER_CHARS) {
+    return { text: paperText, kind: 'full' };
+  }
+  return { text: '', kind: 'none' };
+}
+
+async function sendMessage() {
+  const input = document.getElementById('msg-input');
+  const txt   = input.value.trim();
+  if (!txt || !activeId) return;
+  const d = discussions.find(x => x.id === activeId); if (!d) return;
+
+  input.value=''; input.style.height='auto';
+  d.messages.push({role:'user',content:txt}); addMsg('user',txt);
+  persistCurrentDoc();
+  scheduleSummaryUpdate();
+
+  const loader = addMsg('assistant','',true);
+  document.getElementById('send-btn').disabled = true;
+
+  // ── Assemble system as content blocks so the paper can be cached ──
+  const systemBlocks = [];
+
+  // 1) Instruction block (small, not cached separately)
+  systemBlocks.push({
+    type: 'text',
+    text:
+      `You are a sharp, concise research assistant helping someone read a paper or article. ` +
+      `Answer using the FULL DOCUMENT provided below as your source of truth — resolve references ` +
+      `like "this", "the above equation", or "the previous section" against it. ` +
+      `Lead with the core point, then briefly elaborate. Use plain language even for dense technical content. ` +
+      `If something genuinely isn't in the document, say so rather than guessing.`,
+  });
+
+  // 2) Full-paper block (CACHED — same text on every question → cheap repeats)
+  const paper = buildPaperBlock();
+  if (paper.kind === 'full') {
+    systemBlocks.push({
+      type: 'text',
+      text: `=== FULL DOCUMENT: ${docMeta.name} ===\n\n${paper.text}`,
+      cache_control: { type: 'ephemeral' },
+    });
+  } else {
+    // Fallback: paper too large or unavailable → send nearby context only
+    const near = findNearbyContext(d.txt, 2500);
+    if (near) {
+      systemBlocks.push({
+        type: 'text',
+        text: `=== NEARBY CONTEXT (full paper too large to include) ===\n\n${near}`,
+      });
+    }
+  }
+
+  // 3) Citation navigation context (when opened from another paper)
+  if (d.citationMeta) {
+    systemBlocks.push({
+      type: 'text',
+      text:
+        `=== CITATION CONTEXT ===\n` +
+        `The researcher opened this paper from a citation while reading "${d.citationMeta.parentName}".\n` +
+        `Selected citation: "${d.citationMeta.citationText}"\n` +
+        (d.citationMeta.refText ? `Bibliography entry: ${d.citationMeta.refText}\n` : '') +
+        `Answer in light of both this paper and why they followed the citation.`,
+    });
+  }
+
+  // 4) The specific highlight + cross-highlight memory (small, dynamic)
+  systemBlocks.push({
+    type: 'text',
+    text:
+      `=== THE RESEARCHER HIGHLIGHTED THIS PASSAGE ===\n"${d.txt}"\n` +
+      buildDocContext(d.id),
+  });
+
+  try {
+    const reply = await callClaude(systemBlocks, d.messages.filter(m=>!m.hidden).slice(-14).map(({role,content})=>({role,content})));
+    d.messages.push({role:'assistant',content:reply});
+    loader.remove(); addMsg('assistant',reply);
+    persistCurrentDoc(); renderList();
+    scheduleSummaryUpdate();
+  } catch(e) { loader.remove(); addMsg('assistant',`Error: ${e.message}`); }
+  document.getElementById('send-btn').disabled = false;
+}
+
+async function callClaude(system, messages) {
+  const r = await fetch('/api/chat', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1000,system,messages})
+  });
+  const data = await r.json();
+  if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
+  return data.content?.[0]?.text ?? 'No response.';
+}
+
+async function callSummarize(text) {
+  const r = await fetch('/api/chat', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ task:'summarize', text }),
+  });
+  const data = await r.json();
+  if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
+  return data.summary || '';
+}
+
+document.getElementById('send-btn').addEventListener('click', sendMessage);
+document.getElementById('msg-input').addEventListener('keydown', e => {
+  if (e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}
+});
+document.getElementById('msg-input').addEventListener('input', function() {
+  this.style.height='auto'; this.style.height=Math.min(this.scrollHeight,100)+'px';
+});
+
+// ═══════════════════════════════════════════════════════
+//  NAV: back to library
+// ═══════════════════════════════════════════════════════
+document.getElementById('new-btn').addEventListener('click', async () => {
+  await maybeUpdateSummary(true);
+  backToUpload();
+});
+function backToUpload() {
+  persistCurrentDoc();
+  clearTimeout(_summaryTimer);
+  pdfDoc=null; discussions=[]; activeId=null; pendingSel=null;
+  currentDocId=null; currentMode=null;
+  conversationSummary=null; summaryMessageCount=0; summaryDirty=false;
+  returnToDocId=null; returnToDocName=null;
+  updateReturnButton();
+  document.getElementById('pdf-pages').innerHTML='';
+  document.getElementById('pdf-pages').style.display='none';
+  document.getElementById('web-reader').style.display='none';
+  document.getElementById('article-body').innerHTML='';
+  document.getElementById('article-heading').textContent='';
+  document.getElementById('article-source-url').innerHTML='';
+  document.getElementById('main-app').style.display='none';
+  document.getElementById('upload-screen').style.display='flex';
+  document.getElementById('url-input').value='';
+  fileInput.value='';
+  showList();
+  renderLibrary();
+}
+
+// ═══════════════════════════════════════════════════════
+//  UTILITIES
+// ═══════════════════════════════════════════════════════
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function md(s) {
+  return s
+    .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g,'<em>$1</em>')
+    .replace(/`([^`]+)`/g,'<code style="background:#2a2a2a;padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
+    .replace(/\n\n/g,'</p><p style="margin-top:8px">')
+    .replace(/\n/g,'<br>');
+}
+function timeAgo(ts) {
+  const s = Math.floor((Date.now()-ts)/1000);
+  if (s < 60)     return 'just now';
+  if (s < 3600)   return Math.floor(s/60)+'m ago';
+  if (s < 86400)  return Math.floor(s/3600)+'h ago';
+  if (s < 604800) return Math.floor(s/86400)+'d ago';
+  return new Date(ts).toLocaleDateString();
+}
+
+// Boot
+function updateAuthBar(info) {
+  const el = document.getElementById('auth-status');
+  const bar = document.getElementById('auth-bar');
+  const row = document.getElementById('auth-email-row');
+  const changeBtn = document.getElementById('auth-change-btn');
+  const emailInput = document.getElementById('auth-email-input');
+  if (!info) { el.textContent = 'Connecting…'; bar.classList.remove('sync-error'); return; }
+
+  let html = '';
+  let hasError = false;
+
+  if (info.needsEmail) {
+    html = '<strong>Enter your email</strong> to load your library from the cloud.';
+    row.classList.add('show');
+    changeBtn.style.display = 'none';
+  } else if (info.email) {
+    emailInput.value = info.email;
+    row.classList.remove('show');
+    changeBtn.style.display = 'inline-block';
+    if (info.lastSyncError) {
+      hasError = true;
+      html = `<strong>${esc(info.email)}</strong> — sync issue.<span class="sync-err">${esc(info.lastSyncError)}</span>`;
+    } else if (info.useCloud) {
+      html = `<strong>${esc(info.email)}</strong> — ${info.docCount || 0} paper${info.docCount === 1 ? '' : 's'} synced. Same email on any device loads your library.`;
+    } else {
+      html = `<strong>${esc(info.email)}</strong> — saved locally only.`;
+    }
+  } else if (info.mode === 'local') {
+    html = info.error
+      ? `<strong>Local only</strong><span class="sync-err">${esc(info.error)}</span>`
+      : '<strong>Local only</strong> — cloud not configured.';
+    row.classList.remove('show');
+    changeBtn.style.display = 'none';
+  }
+
+  el.innerHTML = html;
+  bar.classList.toggle('sync-error', hasError);
+}
+
+window.onPaperStoreSyncChange = updateAuthBar;
+
+async function loadLibraryForEmail() {
+  const email = document.getElementById('auth-email-input').value.trim();
+  if (!email) return;
+  try {
+    const info = await PaperStore.setEmail(email);
+    updateAuthBar(info);
+    renderLibrary();
+    renderReadLater();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+document.getElementById('auth-load-btn').addEventListener('click', loadLibraryForEmail);
+document.getElementById('auth-email-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadLibraryForEmail();
+});
+document.getElementById('auth-change-btn').addEventListener('click', () => {
+  PaperStore.clearEmail();
+  document.getElementById('auth-email-row').classList.add('show');
+  document.getElementById('auth-change-btn').style.display = 'none';
+  updateAuthBar(PaperStore.getSyncStatus());
+  renderLibrary();
+  renderReadLater();
+});
+
+window.onPaperStoreAuthChange = () => {
+  renderLibrary();
+  renderReadLater();
+  updateAuthBar(PaperStore.getSyncStatus());
+};
+
+window.addEventListener('beforeunload', () => { void persistCurrentDoc(); });
+window.addEventListener('pagehide', () => { void persistCurrentDoc(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    void persistCurrentDoc();
+    if (summaryDirty) maybeUpdateSummary(true);
+  }
+});
+
+(async function boot() {
+  initStorage();
+  const info = await PaperStore.init();
+  updateAuthBar(info);
+  renderLibrary();
+  renderReadLater();
+  renderList();
+})();
+</script>
+</body>
+</html>
