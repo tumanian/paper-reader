@@ -1077,31 +1077,37 @@ async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
 }
 
 function smartRewrite(url) {
-  const ax = url.match(/arxiv\.org\/abs\/([\d.]+)/);
+  const ax = url.match(/arxiv\.org\/(?:abs|pdf)\/([\d.]+(?:v\d+)?)/i);
   if (ax) return `https://ar5iv.labs.arxiv.org/html/${ax[1]}`;
   return url;
 }
 
 async function fetchViaProxy(url) {
+  const timeout = AbortSignal.timeout ? AbortSignal.timeout(25000) : undefined;
   const proxies = [
     async () => {
-      const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-        { signal: AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined });
+      const r = await fetch(`/api/fetch?url=${encodeURIComponent(url)}`, { signal: timeout });
+      const d = await r.json();
+      if (!r.ok || !d.html) throw new Error(d.error || `HTTP ${r.status}`);
+      return d.html;
+    },
+    async () => {
+      const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, { signal: timeout });
       const d = await r.json();
       if (!d.contents || d.contents.length < 200) throw new Error('empty');
       return d.contents;
     },
     async () => {
-      const r = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-        { signal: AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined });
+      const r = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`, { signal: timeout });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return await r.text();
-    }
+    },
   ];
+  let lastErr = null;
   for (const proxy of proxies) {
-    try { return await proxy(); } catch(e) { console.warn('Proxy failed:', e); }
+    try { return await proxy(); } catch (e) { lastErr = e; console.warn('Fetch proxy failed:', e); }
   }
-  throw new Error('All proxies failed. The site may block external fetching.');
+  throw new Error(lastErr?.message || 'All proxies failed. The site may block external fetching.');
 }
 
 function renderWebArticle(title, html, url) {

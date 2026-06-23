@@ -7,7 +7,7 @@
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
-const { handleChatRequest } = require('./handler');
+const { handleChatRequest, handleFetchRequest } = require('./handler');
 
 const PORT = process.env.PORT || 3000;
 
@@ -27,6 +27,16 @@ const server = http.createServer(async (req, res) => {
       supabaseUrl: process.env.SUPABASE_URL || null,
       supabaseAnonKey: process.env.SUPABASE_ANON_KEY || null,
     }));
+    return;
+  }
+
+  // ── URL fetch proxy (avoids brittle public CORS proxies) ──
+  if (req.url.startsWith('/api/fetch') && req.method === 'GET') {
+    const u = new URL(req.url, 'http://localhost');
+    const target = u.searchParams.get('url');
+    const { status, json } = await handleFetchRequest(target);
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(json));
     return;
   }
 

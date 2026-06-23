@@ -372,6 +372,45 @@ async function handleChatRequest(body) {
   return callAnthropic(body);
 }
 
+function isFetchUrlAllowed(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch { return false; }
+  if (!['http:', 'https:'].includes(u.protocol)) return false;
+  const host = u.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.local')) return false;
+  if (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return false;
+  if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|169\.254\.)/.test(host)) return false;
+  return true;
+}
+
+async function handleFetchRequest(rawUrl) {
+  const url = String(rawUrl || '').trim();
+  if (!url || !isFetchUrlAllowed(url)) {
+    return { status: 400, json: { error: 'Invalid or disallowed URL.' } };
+  }
+
+  try {
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'PaperReader/1.0 (research tool)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!r.ok) {
+      return { status: 502, json: { error: `Upstream HTTP ${r.status}` } };
+    }
+    const html = await r.text();
+    if (!html || html.length < 100) {
+      return { status: 502, json: { error: 'Upstream returned empty content.' } };
+    }
+    return { status: 200, json: { html, finalUrl: r.url } };
+  } catch (err) {
+    return { status: 502, json: { error: 'Fetch failed: ' + err.message } };
+  }
+}
+
 module.exports = {
   callAnthropic,
   callCheapSummary,
@@ -380,4 +419,5 @@ module.exports = {
   callCitationPreviewClaude,
   callCitationDetect,
   handleChatRequest,
+  handleFetchRequest,
 };
