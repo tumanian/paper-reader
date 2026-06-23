@@ -720,8 +720,8 @@ let conversationSummary = null, summaryMessageCount = 0, summaryDirty = false;
 let _summaryTimer = null, _summaryInFlight = false;
 let pendingCitation = null, returnToDocId = null, returnToDocName = null;
 let citePreviewAbort = null;
-const citePreviewCache = new Map();
 let bibByNumber = {};
+let paperReferences = [];
 
 // Full extracted text of the current paper (for context + caching).
 // Capped so we never blow past the long-context surcharge threshold.
@@ -990,6 +990,7 @@ async function renderPDFPages() {
     if (i === 1) showViewer('pdf');
   }
   paperText = textChunks.join('').slice(0, MAX_PAPER_CHARS);
+  buildPaperReferences();
 }
 
 function restoreHighlightsForLoadedPages() {
@@ -1114,6 +1115,86 @@ function renderWebArticle(title, html, url) {
   const bodyText = document.getElementById('article-body').innerText || '';
   paperText = (`${title || ''}\n\n${bodyText}`).slice(0, MAX_PAPER_CHARS);
   indexWebBibliography();
+  buildPaperReferences();
+}
+
+function buildPaperReferences() {
+  paperReferences = [];
+
+  for (const [id, entry] of Object.entries(bibByNumber).sort((a, b) => +a[0] - +b[0])) {
+    paperReferences.push({
+      id: +id,
+      text: entry.refText || entry.label || '',
+      url: entry.url || null,
+    });
+  }
+  if (paperReferences.length) {
+    logCitation('success', 'extract-refs', { count: paperReferences.length, source: 'dom' });
+    return;
+  }
+
+  const section = extractReferencesSection(paperText);
+  if (!section) {
+    logCitation('fail', 'extract-refs', { reason: 'no references section found' });
+    return;
+  }
+
+  let m;
+  const bracketRe = /\[(\d{1,3})\]\s*([\s\S]*?)(?=\[\d{1,3}\]|$)/g;
+  while ((m = bracketRe.exec(section)) !== null) {
+    const text = m[2].replace(/\s+/g, ' ').trim();
+    if (text.length < 8) continue;
+    const resolved = resolveReferenceEntry(`[${m[1]}] ${text}`);
+    paperReferences.push({ id: +m[1], text, url: resolved.url });
+  }
+
+  if (!paperReferences.length) {
+    const numberedRe = /^\s*(\d{1,3})\.\s+(.+)$/gm;
+    while ((m = numberedRe.exec(section)) !== null) {
+      const text = m[2].replace(/\s+/g, ' ').trim();
+      if (text.length < 8) continue;
+      const resolved = resolveReferenceEntry(text);
+      paperReferences.push({ id: +m[1], text, url: resolved.url });
+    }
+  }
+
+  logCitation(
+    paperReferences.length ? 'success' : 'fail',
+    'extract-refs',
+    { count: paperReferences.length, source: 'text' },
+  );
+}
+
+function expandSelectionText(selText, range) {
+  let expanded = (selText || '').trim();
+  if (range) {
+    try {
+      const r = range.cloneRange();
+      while (r.startOffset > 0 && /[^\s\n]/.test(r.startContainer.textContent[r.startOffset - 1])) {
+        r.setStart(r.startContainer, r.startOffset - 1);
+      }
+      const endText = r.endContainer.textContent || '';
+      while (r.endOffset < endText.length && /[^\s\n]/.test(endText[r.endOffset])) {
+        r.setEnd(r.endContainer, r.endOffset + 1);
+      }
+      expanded = r.toString().replace(/\s+/g, ' ').trim();
+    } catch (_) {}
+  }
+
+  if (paperText && expanded.length <= 160) {
+    const needle = expanded.slice(0, Math.min(24, expanded.length));
+    let idx = paperText.indexOf(expanded);
+    if (idx < 0 && needle.length >= 6) idx = paperText.indexOf(needle);
+    if (idx >= 0) {
+      let start = idx;
+      let end = idx + expanded.length;
+      while (start > 0 && /[^\s\n,;.]/.test(paperText[start - 1])) start--;
+      while (end < paperText.length && /[^\s\n,;.]/.test(paperText[end])) end++;
+      expanded = paperText.slice(start, end).replace(/\s+/g, ' ').trim();
+    }
+  }
+
+  return expanded || selText;
 }
 
 function indexWebBibliography() {
@@ -1157,6 +1238,7 @@ function startApp(name, badge) {
   document.getElementById('source-badge').textContent = badge;
   activeId = null; pendingSel = null; paperText = '';
   bibByNumber = {};
+  paperReferences = [];
 }
 function setStatus(msg) { document.getElementById('load-status').textContent = msg; }
 function showViewer(mode) {
@@ -1168,6 +1250,85 @@ function showViewer(mode) {
 // ═══════════════════════════════════════════════════════
 //  CITATION RESOLUTION
 // ═══════════════════════════════════════════════════════
+const CITE_LOG_KEY = 'paperReader.citationLog.v1';
+const CITE_LOG_MAX = 150;
+const CITE_FAIL_TTL_MS = 60 * 60 * 1000;
+let citationLog = null;
+
+function loadCitationLogStore() {
+  if (citationLog) return citationLog;
+  try { citationLog = JSON.parse(localStorage.getItem(CITE_LOG_KEY)) || {}; }
+  catch { citationLog = {}; }
+  return citationLog;
+}
+
+function persistCitationLog() {
+  try {
+    const entries = Object.values(citationLog);
+    entries.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    if (entries.length > CITE_LOG_MAX) {
+      const keep = new Set(entries.slice(0, CITE_LOG_MAX).map((e) => e.key));
+      for (const k of Object.keys(citationLog)) {
+        if (!keep.has(k)) delete citationLog[k];
+      }
+    }
+    localStorage.setItem(CITE_LOG_KEY, JSON.stringify(citationLog));
+  } catch (e) {
+    console.warn('[CitationLookup] persist failed:', e);
+  }
+}
+
+function normalizeCitationText(t) {
+  return (t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function citeLogKey(citationText) {
+  const doc = currentDocId || 'unknown';
+  return `${doc}::${simpleHash(normalizeCitationText(citationText))}`;
+}
+
+function isCitationLogExpired(entry) {
+  if (!entry?.ts) return true;
+  if (entry.status === 'ok') return false;
+  return Date.now() - entry.ts > CITE_FAIL_TTL_MS;
+}
+
+function getCitationLogEntry(key) {
+  const store = loadCitationLogStore();
+  const entry = store[key];
+  if (!entry) return null;
+  if (isCitationLogExpired(entry)) {
+    delete store[key];
+    persistCitationLog();
+    logCitation('expired', 'cache', { key, stage: entry.stage });
+    return null;
+  }
+  entry.hits = (entry.hits || 0) + 1;
+  entry.lastHit = Date.now();
+  return entry;
+}
+
+function writeCitationLogEntry(key, patch) {
+  const store = loadCitationLogStore();
+  store[key] = {
+    key,
+    hits: 0,
+    ts: Date.now(),
+    parentDocId: currentDocId || null,
+    parentTitle: docMeta?.name || null,
+    ...store[key],
+    ...patch,
+  };
+  persistCitationLog();
+  return store[key];
+}
+
+function logCitation(outcome, stage, data) {
+  const msg = `[CitationLookup] ${outcome} · ${stage}`;
+  if (outcome === 'fail' || outcome === 'expired') console.warn(msg, data);
+  else console.info(msg, data);
+}
+
 function looksLikeCitation(text) {
   const t = (text || '').trim();
   if (!t || t.length > 220) return false;
@@ -1257,21 +1418,76 @@ function findReferenceInPaper(num) {
   return null;
 }
 
+function authorLastNames(authorPart) {
+  const cleaned = (authorPart || '')
+    .replace(/\s+et\s+al\.?/gi, '')
+    .replace(/\([^)]*\)/g, '')
+    .trim();
+  const chunks = cleaned.split(/\s+(?:&|and)\s+|\s*,\s*|\s*;\s*/i).filter(Boolean);
+  const names = [];
+  for (const chunk of chunks) {
+    const parts = chunk.trim().split(/\s+/).filter(Boolean);
+    if (parts.length) names.push(parts[parts.length - 1].replace(/[.,;]+$/, ''));
+  }
+  return [...new Set(names.filter((n) => n.length > 1))];
+}
+
 function findReferenceByAuthorYear(author, year) {
   const refSection = extractReferencesSection(paperText);
   const haystacks = [refSection, paperText];
-  const last = author.replace(/\s+et\s+al\.?/i, '').split(/\s+/).pop();
-  if (!last) return null;
-  const safeLast = last.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`[^\\n]*\\b${safeLast}\\b[^\\n]*\\b${year}\\b[^\\n]*`, 'i');
-  for (const hay of haystacks) {
-    const m = hay.match(re);
-    if (m) return resolveReferenceEntry(m[0]);
+  const names = authorLastNames(author);
+  if (!names.length) {
+    const last = author.replace(/\s+et\s+al\.?/i, '').split(/\s+/).pop();
+    if (last) names.push(last.replace(/[.,;]+$/, ''));
+  }
+  for (const last of names) {
+    const safeLast = last.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`[^\\n]*\\b${safeLast}\\b[^\\n]*\\b${year}\\b[^\\n]*`, 'i');
+    for (const hay of haystacks) {
+      const m = hay.match(re);
+      if (m) return resolveReferenceEntry(m[0]);
+    }
   }
   return null;
 }
 
+function parseParentheticalAuthorYear(text) {
+  const t = (text || '').trim();
+  let authorPart = null;
+  let yearStr = null;
+
+  const wrapped = t.match(/^\(([^()]+)\)$/);
+  if (wrapped) {
+    const ay = wrapped[1].trim().match(/^(.+?),\s*((19|20)\d{2}[a-z]?)$/i);
+    if (ay) {
+      authorPart = ay[1].trim();
+      yearStr = ay[2];
+    }
+  } else {
+    const ay = t.match(/^(.+?),\s*((19|20)\d{2}[a-z]?)$/i);
+    if (ay) {
+      authorPart = ay[1].trim();
+      yearStr = ay[2];
+    }
+  }
+
+  if (!authorPart || !yearStr) return null;
+
+  const ref = findReferenceByAuthorYear(authorPart, yearStr);
+  const base = {
+    label: t,
+    refText: t,
+    authors: authorPart,
+    year: yearStr,
+  };
+  if (ref) return { ...ref, ...base };
+  return { ...base, url: null, unresolved: true };
+}
+
 function parseAuthorYearCitation(text) {
+  const paren = parseParentheticalAuthorYear(text);
+  if (paren) return paren;
+
   const patterns = [
     /([A-Z][A-Za-z\-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][A-Za-z\-]+))*)\s*[\(,]\s*((19|20)\d{2}[a-z]?)/,
     /\(([^()]{4,100})\)/,
@@ -1284,9 +1500,9 @@ function parseAuthorYearCitation(text) {
   const inParens = text.match(patterns[1]);
   if (inParens) {
     const inner = inParens[1];
-    const ay = inner.match(/([A-Za-z][A-Za-z\-]+(?:\s+(?:et\s+al\.?|&\s+[A-Za-z][A-Za-z\-]+))*),?\s*((19|20)\d{2}[a-z]?)/);
+    const ay = inner.match(/(.+),\s*((19|20)\d{2}[a-z]?)$/i);
     if (ay) {
-      const ref = findReferenceByAuthorYear(ay[1], ay[2]);
+      const ref = findReferenceByAuthorYear(ay[1].trim(), ay[2]);
       if (ref) return ref;
     }
   }
@@ -1336,6 +1552,9 @@ function parseCitation(text) {
   const authorYearRef = parseAuthorYearCitation(t);
   if (authorYearRef) return { ...authorYearRef, label: t };
 
+  const parenAuthor = parseParentheticalAuthorYear(t);
+  if (parenAuthor) return parenAuthor;
+
   const authorYear = t.match(/([A-Z][A-Za-z\-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][A-Za-z\-]+))*)\s*[\(,]\s*(\d{4})/);
   if (authorYear) {
     const ref = findReferenceByAuthorYear(authorYear[1], authorYear[2]);
@@ -1355,40 +1574,104 @@ function parseCitation(text) {
 }
 
 async function resolveCitationUrl(cite, signal) {
-  if (cite?.url) return cite.url;
-  const text = cite?.refText || cite?.label || '';
-  if (!text) return null;
+  const citationText = cite?.refText || cite?.label || '';
+  const logKey = citeLogKey(citationText || pendingSel?.txt || '');
 
-  const fromEntry = resolveReferenceEntry(text);
-  if (fromEntry.url) return fromEntry.url;
-
-  const num = extractRefNumber(text);
-  if (num) {
-    const ref = findReferenceInPaper(num);
-    if (ref?.url) return ref.url;
+  if (cite?.url) {
+    logCitation('success', 'url', { logKey, citationText, method: 'direct', url: cite.url });
+    writeCitationLogEntry(logKey, {
+      status: 'ok',
+      stage: 'url',
+      citationText,
+      url: cite.url,
+      urlMethod: 'direct',
+      error: null,
+    });
+    return { url: cite.url, method: 'direct' };
   }
 
-  const authorYearRef = parseAuthorYearCitation(text);
-  if (authorYearRef?.url) return authorYearRef.url;
+  if (!citationText) return null;
 
-  const query = text
-    .replace(/^\[\d+\]\s*/, '')
-    .replace(/\(\d{4}[a-z]?\)/, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 140);
-  if (query.length >= 12) {
+  const bibText = cite?.refText || citationText;
+
+  const cached = getCitationLogEntry(logKey);
+  if (cached?.url && cached.status === 'ok') {
+    logCitation('cache-hit', 'url', { logKey, citationText, url: cached.url, method: cached.urlMethod || 'cache' });
+    return { url: cached.url, method: cached.urlMethod || 'cache' };
+  }
+  if (cached?.status === 'fail' && cached.stage === 'url') {
+    logCitation('cache-hit', 'url-fail', { logKey, citationText, error: cached.error });
+    return null;
+  }
+
+  const fail = (stage, error, extra = {}) => {
+    logCitation('fail', stage, { logKey, citationText, error, ...extra });
+    writeCitationLogEntry(logKey, {
+      status: 'fail',
+      stage,
+      citationText,
+      url: null,
+      error,
+      ...extra,
+    });
+    return null;
+  };
+
+  const succeed = (url, method) => {
+    logCitation('success', 'url', { logKey, citationText, method, url });
+    writeCitationLogEntry(logKey, {
+      status: 'ok',
+      stage: 'url',
+      citationText,
+      url,
+      urlMethod: method,
+      error: null,
+    });
+    return { url, method };
+  };
+
+  const fromEntry = resolveReferenceEntry(bibText);
+  if (fromEntry.url) return succeed(fromEntry.url, 'ref-text');
+
+  const num = extractRefNumber(bibText);
+  if (num) {
+    const ref = findReferenceInPaper(num);
+    if (ref?.url) return succeed(ref.url, 'bib');
+  }
+
+  const authorYearRef = parseAuthorYearCitation(bibText);
+  if (authorYearRef?.url) return succeed(authorYearRef.url, 'author-year');
+
+  let searchQuery = null;
+  if (cite.authors && cite.year) {
+    searchQuery = `${cite.authors} ${cite.year}`.replace(/\s+/g, ' ').trim();
+  }
+  if (!searchQuery) {
+    searchQuery = bibText
+      .replace(/^\[(\d+)\]\s*/, '')
+      .replace(/^\((.+),\s*(19|20)\d{2}[a-z]?\)$/i, '$1 $2')
+      .replace(/[()]/g, ' ')
+      .replace(/\(\d{4}[a-z]?\)/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 140);
+  }
+
+  if (searchQuery.length >= 8) {
     try {
       const r = await fetch(
-        `https://api.crossref.org/works?query.bibliographic=${encodeURIComponent(query)}&rows=1`,
+        `https://api.crossref.org/works?query.bibliographic=${encodeURIComponent(searchQuery)}&rows=1`,
         { signal },
       );
       const data = await r.json();
       const doi = data.message?.items?.[0]?.DOI;
-      if (doi) return `https://doi.org/${doi}`;
+      if (doi) return succeed(`https://doi.org/${doi}`, 'crossref');
+      fail('url', 'Crossref returned no matches', { method: 'crossref', query: searchQuery });
     } catch (e) {
-      console.warn('Crossref lookup failed:', e);
+      fail('url', e.message || 'Crossref lookup failed', { method: 'crossref', query: searchQuery });
     }
+  } else {
+    fail('url', 'Could not resolve citation to a URL', { method: 'none' });
   }
   return null;
 }
@@ -1487,24 +1770,56 @@ async function fetchCitedPaperInfo(url, signal) {
   return fetchPageExcerpt(url, signal);
 }
 
-async function callCitationPreview(payload) {
+async function callCitationMatch(payload, signal) {
+  const r = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task: 'citation-match', ...payload }),
+    signal,
+  });
+  const data = await r.json();
+  if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
+  return data;
+}
+
+async function callCitationPreviewGroq(payload, signal) {
   const r = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task: 'citation-preview', ...payload }),
+    signal,
   });
   const data = await r.json();
   if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
-  return data.preview || '';
+  return data;
 }
 
-async function loadCitationPreview(cite) {
+async function callCitationPreviewClaude(payload, signal) {
+  const r = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task: 'citation-preview-claude', ...payload }),
+    signal,
+  });
+  const data = await r.json();
+  if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
+  return data;
+}
+
+async function loadCitationPreview() {
   const el = document.getElementById('cite-preview');
   const citeBtn = document.getElementById('cite-open-btn');
-  if (!cite || (!cite.url && !looksLikeCitation(cite.label || cite.refText || pendingSel?.txt))) {
+  if (!pendingSel) {
     el.style.display = 'none';
-    el.innerHTML = '';
+    citeBtn.style.display = 'none';
     citePreviewAbort?.abort();
+    return;
+  }
+
+  buildPaperReferences();
+  if (!paperReferences.length) {
+    el.style.display = 'none';
+    citeBtn.style.display = 'none';
     return;
   }
 
@@ -1512,73 +1827,200 @@ async function loadCitationPreview(cite) {
   citePreviewAbort = new AbortController();
   const { signal } = citePreviewAbort;
 
+  const rawSelection = pendingSel.txt;
+  const expandedSelection = expandSelectionText(rawSelection, pendingSel.range);
+  pendingSel.expandedTxt = expandedSelection;
+  const passage = findNearbyContext(expandedSelection, 1200);
+  const logKey = citeLogKey(expandedSelection);
+
   el.style.display = 'block';
   el.classList.add('loading');
-  el.textContent = 'Loading citation preview…';
+  el.textContent = 'Matching citation…';
 
-  let url = cite.url;
-  if (!url) {
-    url = await resolveCitationUrl(cite, signal);
-    if (signal.aborted) return;
-    if (url) {
-      cite = { ...cite, url };
-      pendingCitation = { ...(pendingCitation || cite), url };
-      citeBtn.style.display = 'flex';
-      citeBtn.textContent = '📖 Open citation';
-    }
-  }
-
-  if (!url) {
+  const cachedPreview = getCitationLogEntry(logKey);
+  if (cachedPreview?.status === 'ok' && cachedPreview.preview) {
+    logCitation('cache-hit', 'preview', { logKey, citationText: expandedSelection, url: cachedPreview.url });
+    pendingCitation = {
+      url: cachedPreview.url,
+      refText: cachedPreview.refText || expandedSelection,
+      label: expandedSelection,
+      matchId: cachedPreview.matchId,
+    };
+    citeBtn.style.display = cachedPreview.url ? 'flex' : 'none';
+    citeBtn.textContent = '📖 Open citation';
     el.classList.remove('loading');
     el.innerHTML =
-      `<div class="cite-preview-title">Citation</div>` +
-      `<span style="color:#888">Could not resolve this reference to a paper URL. ` +
-      `Try selecting the full bibliography line, or a citation with a DOI/link.</span>`;
-    return;
-  }
-
-  const cacheKey = `${url}::${pendingSel?.txt || cite.label || ''}`;
-  if (citePreviewCache.has(cacheKey)) {
-    el.classList.remove('loading');
-    el.innerHTML = `<div class="cite-preview-title">Cited paper</div>${esc(citePreviewCache.get(cacheKey))}`;
+      `<div class="cite-preview-title">${esc(cachedPreview.citedTitle || 'Cited paper')}</div>` +
+      esc(cachedPreview.preview);
     return;
   }
 
   try {
-    const cited = await fetchCitedPaperInfo(url, signal);
-    if (signal.aborted) return;
+    let match = cachedPreview?.match;
+    if (!match) {
+      match = await callCitationMatch({
+        references: paperReferences,
+        selection: expandedSelection,
+        passage,
+      }, signal);
+      if (signal.aborted) return;
+      writeCitationLogEntry(logKey, { match, citationText: expandedSelection });
+      logCitation(match.isCitation ? 'success' : 'success', 'match', {
+        logKey,
+        selection: expandedSelection,
+        matchId: match.matchId,
+        confidence: match.confidence,
+        reason: match.reason,
+      });
+    } else {
+      logCitation('cache-hit', 'match', { logKey, selection: expandedSelection, matchId: match.matchId });
+    }
 
-    const parentExcerpt = findNearbyContext(pendingSel?.txt || cite.label || '', 900);
-    const preview = await callCitationPreview({
+    if (!match.isCitation || match.matchId == null) {
+      logCitation('fail', 'match', { logKey, selection: expandedSelection, reason: match.reason || 'not a citation' });
+      el.style.display = 'none';
+      citeBtn.style.display = 'none';
+      pendingCitation = null;
+      return;
+    }
+
+    const ref = paperReferences.find((r) => r.id === match.matchId);
+    if (!ref) {
+      logCitation('fail', 'match', { logKey, matchId: match.matchId, reason: 'id not in bibliography' });
+      el.classList.remove('loading');
+      el.innerHTML = `<div class="cite-preview-title">Citation</div><span style="color:#888">Matched reference not found in bibliography.</span>`;
+      return;
+    }
+
+    let cite = {
+      url: ref.url,
+      refText: ref.text,
+      label: expandedSelection,
+      matchId: ref.id,
+    };
+    pendingCitation = cite;
+
+    let urlMethod = cite.url ? 'bib' : null;
+    if (!cite.url) {
+      el.textContent = 'Resolving paper URL…';
+      const resolved = await resolveCitationUrl(cite, signal);
+      if (signal.aborted) return;
+      if (resolved?.url) {
+        cite.url = resolved.url;
+        urlMethod = resolved.method;
+        pendingCitation = cite;
+      }
+    }
+
+    if (!cite.url) {
+      logCitation('fail', 'url', { logKey, selection: expandedSelection, ref: ref.text.slice(0, 80) });
+      el.classList.remove('loading');
+      el.innerHTML =
+        `<div class="cite-preview-title">${esc(ref.text.slice(0, 80))}…</div>` +
+        `<span style="color:#888">Found the reference but could not resolve a URL.</span>`;
+      citeBtn.style.display = 'none';
+      return;
+    }
+
+    citeBtn.style.display = 'flex';
+    citeBtn.textContent = '📖 Open citation';
+    el.textContent = 'Fetching abstract…';
+
+    const cited = await fetchCitedPaperInfo(cite.url, signal);
+    if (signal.aborted) return;
+    logCitation('success', 'abstract', { logKey, url: cite.url, title: cited.title });
+
+    el.textContent = 'Summarizing…';
+    const previewPayload = {
       parentTitle: docMeta.name,
-      parentExcerpt,
-      citationText: pendingSel?.txt || cite.label,
+      parentExcerpt: passage,
+      citationText: expandedSelection,
       citedTitle: cited.title,
       citedText: cited.text,
-    });
+    };
+
+    let previewResult = await callCitationPreviewGroq(previewPayload, signal);
     if (signal.aborted) return;
 
-    citePreviewCache.set(cacheKey, preview);
+    let preview = previewResult.preview || '';
+    let previewSource = previewResult.source || 'groq';
+
+    if (!previewResult.sufficient) {
+      logCitation('fail', 'preview-groq', {
+        logKey,
+        reason: previewResult.reason || 'insufficient',
+      });
+      el.textContent = 'Asking Claude…';
+      previewResult = await callCitationPreviewClaude(previewPayload, signal);
+      if (signal.aborted) return;
+      preview = previewResult.preview || preview;
+      previewSource = previewResult.source || 'claude';
+      logCitation('success', 'preview-claude', { logKey, url: cite.url });
+    } else {
+      logCitation('success', 'preview-groq', { logKey, url: cite.url });
+    }
+
+    writeCitationLogEntry(logKey, {
+      status: 'ok',
+      stage: 'preview',
+      citationText: expandedSelection,
+      refText: ref.text,
+      matchId: ref.id,
+      url: cite.url,
+      urlMethod,
+      citedTitle: cited.title,
+      preview,
+      previewSource,
+      match,
+      error: null,
+    });
+
     el.classList.remove('loading');
-    el.innerHTML = `<div class="cite-preview-title">${esc(cited.title || 'Cited paper')}</div>${esc(preview)}`;
+    el.innerHTML = `<div class="cite-preview-title">${esc(cited.title || ref.text.slice(0, 80))}</div>${esc(preview)}`;
   } catch (e) {
     if (signal.aborted) return;
+    const errMsg = e.message || 'Preview unavailable';
+    writeCitationLogEntry(logKey, {
+      status: 'fail',
+      stage: 'preview',
+      citationText: expandedSelection,
+      error: errMsg,
+    });
+    logCitation('fail', 'preview', { logKey, selection: expandedSelection, error: errMsg });
     el.classList.remove('loading');
-    el.innerHTML = `<div class="cite-preview-title">Cited paper</div><span style="color:#888">${esc(e.message || 'Preview unavailable')}</span>`;
+    el.innerHTML = `<div class="cite-preview-title">Citation</div><span style="color:#888">${esc(errMsg)}</span>`;
+    citeBtn.style.display = 'none';
+    pendingCitation = null;
   }
+}
+
+function shouldTryCitationPreview(text) {
+  const t = (text || '').trim();
+  if (!t || t.length > 200) return false;
+  if (looksLikeCitation(t)) return true;
+  return t.length <= 100 && paperReferences.length > 0;
 }
 
 function updatePopoverButtons() {
   const citeBtn = document.getElementById('cite-open-btn');
-  if (pendingCitation) {
-    citeBtn.style.display = pendingCitation.url ? 'flex' : 'none';
-    citeBtn.textContent = '📖 Open citation';
-    loadCitationPreview(pendingCitation);
-  } else {
+  const previewEl = document.getElementById('cite-preview');
+  if (!pendingSel) {
     citeBtn.style.display = 'none';
-    document.getElementById('cite-preview').style.display = 'none';
+    previewEl.style.display = 'none';
     citePreviewAbort?.abort();
+    pendingCitation = null;
+    return;
   }
+  buildPaperReferences();
+  if (!shouldTryCitationPreview(pendingSel.txt)) {
+    citeBtn.style.display = 'none';
+    previewEl.style.display = 'none';
+    citePreviewAbort?.abort();
+    pendingCitation = null;
+    return;
+  }
+  citeBtn.style.display = 'none';
+  loadCitationPreview();
 }
 
 function updateReturnButton() {
@@ -1692,13 +2134,14 @@ document.addEventListener('mouseup', e => {
     if (!rawRects.length) { hidePopover(); return; }
 
     pendingCitation = parseCitation(txt);
+    if (!pendingCitation) pendingCitation = parseParentheticalAuthorYear(txt);
     if (txt.length < 2 && !pendingCitation) { hidePopover(); return; }
 
     const pageWrap = selEl.closest('.pdf-page-wrapper');
     if (pageWrap) {
       const pr = pageWrap.getBoundingClientRect();
       pendingSel = {
-        txt, mode:'pdf', pageNum:+pageWrap.dataset.page, wrapper:pageWrap,
+        txt, range: range.cloneRange(), mode:'pdf', pageNum:+pageWrap.dataset.page, wrapper:pageWrap,
         relRects: rawRects.map(r => ({ left:r.left-pr.left, top:r.top-pr.top, width:r.width, height:r.height }))
       };
       positionPopover(rawRects[rawRects.length-1]);
@@ -1710,7 +2153,7 @@ document.addEventListener('mouseup', e => {
     if (aw && selEl.closest('#article-body, #article-heading')) {
       const ar = aw.getBoundingClientRect();
       pendingSel = {
-        txt, mode:'web', pageNum:null, wrapper:aw,
+        txt, range: range.cloneRange(), mode:'web', pageNum:null, wrapper:aw,
         relRects: rawRects.map(r => ({ left:r.left-ar.left, top:r.top-ar.top, width:r.width, height:r.height }))
       };
       positionPopover(rawRects[rawRects.length-1]);
