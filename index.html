@@ -258,8 +258,14 @@ body {
 #article-body th { background:#f8f7f4; font-weight:600; }
 
 /* ── Popover ─────────────────────────────────────────── */
-#selection-popover { position:fixed; display:none; z-index:9999; filter:drop-shadow(0 4px 14px rgba(0,0,0,.22)); }
+#selection-popover { position:fixed; display:none; z-index:9999; filter:drop-shadow(0 4px 14px rgba(0,0,0,.22)); max-width:340px; }
 .pop-inner { background:#1a1a1a; border-radius:10px; padding:6px; display:flex; flex-direction:column; gap:4px; }
+#cite-preview {
+  display:none; padding:8px 10px 6px; font-size:12px; line-height:1.45; color:#b8b8b8;
+  border-bottom:1px solid #2a2a2a; margin-bottom:2px;
+}
+#cite-preview.loading { color:#777; font-style:italic; }
+#cite-preview .cite-preview-title { font-size:11px; color:#7a9; margin-bottom:4px; font-weight:500; }
 .pop-btn { display:flex; align-items:center; gap:6px; padding:7px 14px; border:none; border-radius:7px; font-size:13px; font-weight:500; cursor:pointer; white-space:nowrap; }
 #ask-btn { background:#5b6af7; color:white; }
 #ask-btn:hover { background:#4a58e6; }
@@ -424,6 +430,7 @@ body {
 
 <div id="selection-popover">
   <div class="pop-inner">
+    <div id="cite-preview"></div>
     <button class="pop-btn" id="ask-btn">✦ Discuss</button>
     <button class="pop-btn" id="cite-open-btn">📖 Open citation</button>
     <button class="pop-btn" id="read-later-sel-btn">🔖 Read later</button>
@@ -712,6 +719,8 @@ let docMeta = { name:'', mode:'', badge:'', url:null };
 let conversationSummary = null, summaryMessageCount = 0, summaryDirty = false;
 let _summaryTimer = null, _summaryInFlight = false;
 let pendingCitation = null, returnToDocId = null, returnToDocName = null;
+let citePreviewAbort = null;
+const citePreviewCache = new Map();
 
 // Full extracted text of the current paper (for context + caching).
 // Capped so we never blow past the long-context surcharge threshold.
@@ -1243,13 +1252,170 @@ function parseCitation(text) {
   return null;
 }
 
+function decodeXmlText(s) {
+  if (!s) return '';
+  const el = document.createElement('textarea');
+  el.innerHTML = s.replace(/\s+/g, ' ').trim();
+  return el.value;
+}
+
+function arxivIdFromUrl(url) {
+  const patterns = [
+    /arxiv\.org\/abs\/([\d.]+(?:v\d+)?)/i,
+    /ar5iv\.labs\.arxiv\.org\/html\/([\d.]+(?:v\d+)?)/i,
+    /arxiv\.org\/pdf\/([\d.]+(?:v\d+)?)/i,
+  ];
+  for (const re of patterns) {
+    const m = url.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+async function fetchArxivAbstract(arxivId, signal) {
+  const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(arxivId)}`, { signal });
+  const xml = await r.text();
+  const title = decodeXmlText(xml.match(/<entry>[\s\S]*?<title>([^<]+)/)?.[1]);
+  const summary = decodeXmlText(xml.match(/<summary>([^<]+)/)?.[1]);
+  if (!summary) throw new Error('No abstract found');
+  return { title, text: summary };
+}
+
+async function fetchDoiAbstract(url, signal) {
+  const m = url.match(/doi\.org\/(10\.\d{4,9}\/[^\s#?]+)/i);
+  if (!m) return null;
+  const r = await fetch(`https://api.crossref.org/works/${encodeURIComponent(m[1])}`, { signal });
+  if (!r.ok) throw new Error('DOI lookup failed');
+  const data = await r.json();
+  const item = data.message || {};
+  const title = item.title?.[0] || '';
+  const abstract = (item.abstract || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const text = abstract || item.subtitle?.[0] || '';
+  if (!text) throw new Error('No abstract in DOI record');
+  return { title, text };
+}
+
+async function fetchPageExcerpt(url, signal) {
+  const html = await fetchViaProxy(url);
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
+  const metaAbs = doc.querySelector('meta[name="citation_abstract"], meta[property="og:description"]');
+  if (metaAbs?.content?.trim()) {
+    const title = doc.querySelector('meta[name="citation_title"]')?.content
+      || doc.querySelector('title')?.textContent?.trim()
+      || url;
+    return { title, text: metaAbs.content.trim() };
+  }
+
+  const absEl = doc.querySelector('.ltx_abstract, blockquote.abstract, #abs, .abstract, [class*="abstract"]');
+  if (absEl?.textContent?.trim()) {
+    const title = doc.querySelector('meta[name="citation_title"]')?.content
+      || doc.querySelector('h1')?.textContent?.trim()
+      || doc.querySelector('title')?.textContent?.trim()
+      || url;
+    return { title, text: absEl.textContent.replace(/\s+/g, ' ').trim().slice(0, 4000) };
+  }
+
+  if (typeof Readability !== 'undefined') {
+    try {
+      const art = new Readability(doc).parse();
+      if (art?.textContent) {
+        return {
+          title: art.title || url,
+          text: art.textContent.replace(/\s+/g, ' ').trim().slice(0, 2500),
+        };
+      }
+    } catch (_) {}
+  }
+
+  throw new Error('Could not extract cited paper text');
+}
+
+async function fetchCitedPaperInfo(url, signal) {
+  const arxivId = arxivIdFromUrl(url);
+  if (arxivId) {
+    try { return await fetchArxivAbstract(arxivId, signal); }
+    catch (e) { console.warn('arXiv API failed:', e); }
+  }
+
+  try {
+    const doiInfo = await fetchDoiAbstract(url, signal);
+    if (doiInfo) return doiInfo;
+  } catch (e) { console.warn('DOI lookup failed:', e); }
+
+  return fetchPageExcerpt(url, signal);
+}
+
+async function callCitationPreview(payload) {
+  const r = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task: 'citation-preview', ...payload }),
+  });
+  const data = await r.json();
+  if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
+  return data.preview || '';
+}
+
+async function loadCitationPreview(cite) {
+  const el = document.getElementById('cite-preview');
+  if (!cite?.url) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    citePreviewAbort?.abort();
+    return;
+  }
+
+  const cacheKey = `${cite.url}::${pendingSel?.txt || cite.label || ''}`;
+  if (citePreviewCache.has(cacheKey)) {
+    el.style.display = 'block';
+    el.classList.remove('loading');
+    el.innerHTML = `<div class="cite-preview-title">Cited paper</div>${esc(citePreviewCache.get(cacheKey))}`;
+    return;
+  }
+
+  citePreviewAbort?.abort();
+  citePreviewAbort = new AbortController();
+  const { signal } = citePreviewAbort;
+
+  el.style.display = 'block';
+  el.classList.add('loading');
+  el.textContent = 'Loading citation preview…';
+
+  try {
+    const cited = await fetchCitedPaperInfo(cite.url, signal);
+    if (signal.aborted) return;
+
+    const parentExcerpt = findNearbyContext(pendingSel?.txt || cite.label || '', 900);
+    const preview = await callCitationPreview({
+      parentTitle: docMeta.name,
+      parentExcerpt,
+      citationText: pendingSel?.txt || cite.label,
+      citedTitle: cited.title,
+      citedText: cited.text,
+    });
+    if (signal.aborted) return;
+
+    citePreviewCache.set(cacheKey, preview);
+    el.classList.remove('loading');
+    el.innerHTML = `<div class="cite-preview-title">${esc(cited.title || 'Cited paper')}</div>${esc(preview)}`;
+  } catch (e) {
+    if (signal.aborted) return;
+    el.classList.remove('loading');
+    el.innerHTML = `<div class="cite-preview-title">Cited paper</div><span style="color:#888">${esc(e.message || 'Preview unavailable')}</span>`;
+  }
+}
+
 function updatePopoverButtons() {
   const citeBtn = document.getElementById('cite-open-btn');
   if (pendingCitation?.url) {
     citeBtn.style.display = 'flex';
     citeBtn.textContent = '📖 Open citation';
+    loadCitationPreview(pendingCitation);
   } else {
     citeBtn.style.display = 'none';
+    document.getElementById('cite-preview').style.display = 'none';
+    citePreviewAbort?.abort();
   }
 }
 
@@ -1408,7 +1574,10 @@ function positionPopover(last) {
 }
 function hidePopover() {
   document.getElementById('selection-popover').style.display = 'none';
+  citePreviewAbort?.abort();
   pendingCitation = null;
+  document.getElementById('cite-preview').style.display = 'none';
+  document.getElementById('cite-preview').innerHTML = '';
 }
 
 // ═══════════════════════════════════════════════════════

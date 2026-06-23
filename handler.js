@@ -95,9 +95,74 @@ async function callCheapSummary(body) {
   }
 }
 
+async function callCitationPreview(body) {
+  const { parentTitle, parentExcerpt, citationText, citedTitle, citedText } = body || {};
+  if (!citedText || typeof citedText !== 'string' || !citedText.trim()) {
+    return { status: 400, json: { error: 'Citation preview needs cited paper text (abstract or excerpt).' } };
+  }
+
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    const fallback = citedText.trim().slice(0, 420);
+    return {
+      status: 200,
+      json: {
+        preview: fallback + (citedText.length > 420 ? '…' : ''),
+        source: 'abstract',
+      },
+    };
+  }
+
+  const prompt =
+    `Paper being read: ${parentTitle || 'Unknown'}\n` +
+    (parentExcerpt ? `Nearby passage:\n${parentExcerpt.slice(0, 2500)}\n\n` : '') +
+    `Selected citation: ${citationText || ''}\n\n` +
+    `Cited paper: ${citedTitle || 'Unknown'}\n` +
+    `Abstract / excerpt:\n${citedText.slice(0, 6000)}`;
+
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: DEFAULT_SUMMARY_MODEL,
+        max_tokens: 180,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'A researcher selected a citation while reading a paper. In 2–3 short sentences, state the cited paper\'s main idea and why it is likely relevant to what they are reading. Plain prose, no bullet lists, no preamble.',
+          },
+          { role: 'user', content: prompt },
+        ],
+      }),
+    });
+
+    const data = await r.json();
+    if (!r.ok) {
+      const msg = data?.error?.message || data?.error || 'Citation preview failed.';
+      return { status: r.status, json: { error: msg } };
+    }
+
+    const preview = data.choices?.[0]?.message?.content?.trim() || '';
+    if (!preview) {
+      return { status: 502, json: { error: 'Preview model returned an empty response.' } };
+    }
+
+    return { status: 200, json: { preview, source: 'summary' } };
+  } catch (err) {
+    return { status: 502, json: { error: 'Citation preview upstream failed: ' + err.message } };
+  }
+}
+
 async function handleChatRequest(body) {
   if (body?.task === 'summarize') return callCheapSummary(body);
+  if (body?.task === 'citation-preview') return callCitationPreview(body);
   return callAnthropic(body);
 }
 
-module.exports = { callAnthropic, callCheapSummary, handleChatRequest };
+module.exports = { callAnthropic, callCheapSummary, callCitationPreview, handleChatRequest };
