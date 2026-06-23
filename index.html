@@ -721,6 +721,7 @@ let _summaryTimer = null, _summaryInFlight = false;
 let pendingCitation = null, returnToDocId = null, returnToDocName = null;
 let citePreviewAbort = null;
 const citePreviewCache = new Map();
+let bibByNumber = {};
 
 // Full extracted text of the current paper (for context + caching).
 // Capped so we never blow past the long-context surcharge threshold.
@@ -1112,6 +1113,25 @@ function renderWebArticle(title, html, url) {
   // capture full text for context + caching
   const bodyText = document.getElementById('article-body').innerText || '';
   paperText = (`${title || ''}\n\n${bodyText}`).slice(0, MAX_PAPER_CHARS);
+  indexWebBibliography();
+}
+
+function indexWebBibliography() {
+  bibByNumber = {};
+  const body = document.getElementById('article-body');
+  if (!body) return;
+
+  body.querySelectorAll('.ltx_bibitem, li[id^="bib."], li[id*="bibitem"], .csl-entry').forEach((item) => {
+    const tag = item.querySelector('.ltx_tag_bibitem, .label, .citation-number');
+    const numMatch = (tag?.textContent || item.id || '').match(/(\d{1,3})/);
+    if (!numMatch) return;
+    const num = +numMatch[1];
+    const text = item.textContent.replace(/\s+/g, ' ').trim();
+    const entry = resolveReferenceEntry(text);
+    const link = item.querySelector('a[href^="http"]');
+    if (link?.href && !entry.url) entry.url = link.href;
+    bibByNumber[num] = entry;
+  });
 }
 
 function restoreWebHighlights() {
@@ -1136,6 +1156,7 @@ function startApp(name, badge) {
   document.getElementById('paper-name').textContent = name;
   document.getElementById('source-badge').textContent = badge;
   activeId = null; pendingSel = null; paperText = '';
+  bibByNumber = {};
 }
 function setStatus(msg) { document.getElementById('load-status').textContent = msg; }
 function showViewer(mode) {
@@ -1147,6 +1168,36 @@ function showViewer(mode) {
 // ═══════════════════════════════════════════════════════
 //  CITATION RESOLUTION
 // ═══════════════════════════════════════════════════════
+function looksLikeCitation(text) {
+  const t = (text || '').trim();
+  if (!t || t.length > 220) return false;
+  if (/https?:\/\//i.test(t)) return true;
+  if (/\[\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*\]/.test(t)) return true;
+  if (/(?:^|\s)\(\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*\)(?:\s|$)/.test(t)) return true;
+  if (/\barxiv\b/i.test(t)) return true;
+  if (/10\.\d{4,9}\/\S+/i.test(t)) return true;
+  if (/\(\s*[^()]{3,90},\s*(19|20)\d{2}[a-z]?\s*\)/i.test(t)) return true;
+  if (/\b[A-Z][A-Za-z\-]{2,}(?:\s+(?:et\s+al\.?|&\s+[A-Z][A-Za-z\-]+))*,?\s+(19|20)\d{2}[a-z]?\b/.test(t)) return true;
+  return false;
+}
+
+function extractRefNumber(text) {
+  const t = (text || '').trim();
+  const patterns = [
+    /\[(\d{1,3})\]/,
+    /^\[(\d{1,3})\]$/,
+    /\((\d{1,3})\)/,
+    /^(\d{1,3})$/,
+  ];
+  for (const re of patterns) {
+    const m = t.match(re);
+    if (m) return +m[1];
+  }
+  const multi = t.match(/\[(\d{1,3})\s*[,;]/);
+  if (multi) return +multi[1];
+  return null;
+}
+
 function extractReferencesSection(text) {
   if (!text) return '';
   const markers = [
@@ -1154,12 +1205,19 @@ function extractReferencesSection(text) {
     /\n\s*Bibliography\s*\n/i,
     /\n\s*REFERENCES\s*\n/,
     /\n\s*Works\s+Cited\s*\n/i,
+    /\bReferences\b/i,
+    /\bBibliography\b/i,
   ];
+  let bestIdx = -1;
+  let bestLen = 0;
   for (const re of markers) {
-    const m = text.match(re);
-    if (m) return text.slice(m.index + m[0].length);
+    const reGlobal = new RegExp(re.source, re.flags.includes('i') ? re.flags : re.flags + 'i');
+    for (const m of text.matchAll(reGlobal)) {
+      if (m.index >= bestIdx) { bestIdx = m.index; bestLen = m[0].length; }
+    }
   }
-  return '';
+  if (bestIdx >= 0) return text.slice(bestIdx + bestLen);
+  return text.slice(Math.floor(text.length * 0.82));
 }
 
 function resolveReferenceEntry(entryText) {
@@ -1177,30 +1235,61 @@ function resolveReferenceEntry(entryText) {
 }
 
 function findReferenceInPaper(num) {
+  if (bibByNumber[num]) return { ...bibByNumber[num] };
+
   const refSection = extractReferencesSection(paperText);
-  if (!refSection) return null;
+  const haystacks = [refSection, paperText];
 
   const patterns = [
     new RegExp(`\\[${num}\\]\\s*[^\\[]*`, 'i'),
     new RegExp(`^\\s*${num}\\.\\s+(.+)$`, 'm'),
     new RegExp(`^\\s*${num}\\)\\s+(.+)$`, 'm'),
-    new RegExp(`^\\s*${num}\\s+([A-Z].+)$`, 'm'),
+    new RegExp(`^\\s*${num}\\s+([A-Za-z].+)$`, 'm'),
+    new RegExp(`\\[${num}\\]\\s*([^\n\\[]{15,400})`, 'i'),
   ];
-  for (const p of patterns) {
-    const m = refSection.match(p);
-    if (m) return resolveReferenceEntry(m[0] || m[1]);
+  for (const hay of haystacks) {
+    if (!hay) continue;
+    for (const p of patterns) {
+      const m = hay.match(p);
+      if (m) return resolveReferenceEntry(m[0] || m[1]);
+    }
   }
   return null;
 }
 
 function findReferenceByAuthorYear(author, year) {
   const refSection = extractReferencesSection(paperText);
-  if (!refSection) return null;
+  const haystacks = [refSection, paperText];
   const last = author.replace(/\s+et\s+al\.?/i, '').split(/\s+/).pop();
   if (!last) return null;
-  const re = new RegExp(`[^\\n]*\\b${last}\\b[^\\n]*\\b${year}\\b[^\\n]*`, 'i');
-  const m = refSection.match(re);
-  if (m) return resolveReferenceEntry(m[0]);
+  const safeLast = last.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`[^\\n]*\\b${safeLast}\\b[^\\n]*\\b${year}\\b[^\\n]*`, 'i');
+  for (const hay of haystacks) {
+    const m = hay.match(re);
+    if (m) return resolveReferenceEntry(m[0]);
+  }
+  return null;
+}
+
+function parseAuthorYearCitation(text) {
+  const patterns = [
+    /([A-Z][A-Za-z\-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][A-Za-z\-]+))*)\s*[\(,]\s*((19|20)\d{2}[a-z]?)/,
+    /\(([^()]{4,100})\)/,
+  ];
+  const direct = text.match(patterns[0]);
+  if (direct) {
+    const ref = findReferenceByAuthorYear(direct[1], direct[2]);
+    if (ref) return ref;
+  }
+  const inParens = text.match(patterns[1]);
+  if (inParens) {
+    const inner = inParens[1];
+    const ay = inner.match(/([A-Za-z][A-Za-z\-]+(?:\s+(?:et\s+al\.?|&\s+[A-Za-z][A-Za-z\-]+))*),?\s*((19|20)\d{2}[a-z]?)/);
+    if (ay) {
+      const ref = findReferenceByAuthorYear(ay[1], ay[2]);
+      if (ref) return ref;
+    }
+  }
   return null;
 }
 
@@ -1238,6 +1327,15 @@ function parseCitation(text) {
     if (ref) return { ...ref, label: t };
   }
 
+  const refNum = extractRefNumber(t);
+  if (refNum) {
+    const ref = findReferenceInPaper(refNum);
+    if (ref) return { ...ref, label: t };
+  }
+
+  const authorYearRef = parseAuthorYearCitation(t);
+  if (authorYearRef) return { ...authorYearRef, label: t };
+
   const authorYear = t.match(/([A-Z][A-Za-z\-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][A-Za-z\-]+))*)\s*[\(,]\s*(\d{4})/);
   if (authorYear) {
     const ref = findReferenceByAuthorYear(authorYear[1], authorYear[2]);
@@ -1249,6 +1347,49 @@ function parseCitation(text) {
     if (ref) return { ...ref, label: t };
   }
 
+  if (looksLikeCitation(t)) {
+    return { url: null, label: t.slice(0, 140), refText: t, unresolved: true };
+  }
+
+  return null;
+}
+
+async function resolveCitationUrl(cite, signal) {
+  if (cite?.url) return cite.url;
+  const text = cite?.refText || cite?.label || '';
+  if (!text) return null;
+
+  const fromEntry = resolveReferenceEntry(text);
+  if (fromEntry.url) return fromEntry.url;
+
+  const num = extractRefNumber(text);
+  if (num) {
+    const ref = findReferenceInPaper(num);
+    if (ref?.url) return ref.url;
+  }
+
+  const authorYearRef = parseAuthorYearCitation(text);
+  if (authorYearRef?.url) return authorYearRef.url;
+
+  const query = text
+    .replace(/^\[\d+\]\s*/, '')
+    .replace(/\(\d{4}[a-z]?\)/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 140);
+  if (query.length >= 12) {
+    try {
+      const r = await fetch(
+        `https://api.crossref.org/works?query.bibliographic=${encodeURIComponent(query)}&rows=1`,
+        { signal },
+      );
+      const data = await r.json();
+      const doi = data.message?.items?.[0]?.DOI;
+      if (doi) return `https://doi.org/${doi}`;
+    } catch (e) {
+      console.warn('Crossref lookup failed:', e);
+    }
+  }
   return null;
 }
 
@@ -1359,18 +1500,11 @@ async function callCitationPreview(payload) {
 
 async function loadCitationPreview(cite) {
   const el = document.getElementById('cite-preview');
-  if (!cite?.url) {
+  const citeBtn = document.getElementById('cite-open-btn');
+  if (!cite || (!cite.url && !looksLikeCitation(cite.label || cite.refText || pendingSel?.txt))) {
     el.style.display = 'none';
     el.innerHTML = '';
     citePreviewAbort?.abort();
-    return;
-  }
-
-  const cacheKey = `${cite.url}::${pendingSel?.txt || cite.label || ''}`;
-  if (citePreviewCache.has(cacheKey)) {
-    el.style.display = 'block';
-    el.classList.remove('loading');
-    el.innerHTML = `<div class="cite-preview-title">Cited paper</div>${esc(citePreviewCache.get(cacheKey))}`;
     return;
   }
 
@@ -1382,8 +1516,36 @@ async function loadCitationPreview(cite) {
   el.classList.add('loading');
   el.textContent = 'Loading citation preview…';
 
+  let url = cite.url;
+  if (!url) {
+    url = await resolveCitationUrl(cite, signal);
+    if (signal.aborted) return;
+    if (url) {
+      cite = { ...cite, url };
+      pendingCitation = { ...(pendingCitation || cite), url };
+      citeBtn.style.display = 'flex';
+      citeBtn.textContent = '📖 Open citation';
+    }
+  }
+
+  if (!url) {
+    el.classList.remove('loading');
+    el.innerHTML =
+      `<div class="cite-preview-title">Citation</div>` +
+      `<span style="color:#888">Could not resolve this reference to a paper URL. ` +
+      `Try selecting the full bibliography line, or a citation with a DOI/link.</span>`;
+    return;
+  }
+
+  const cacheKey = `${url}::${pendingSel?.txt || cite.label || ''}`;
+  if (citePreviewCache.has(cacheKey)) {
+    el.classList.remove('loading');
+    el.innerHTML = `<div class="cite-preview-title">Cited paper</div>${esc(citePreviewCache.get(cacheKey))}`;
+    return;
+  }
+
   try {
-    const cited = await fetchCitedPaperInfo(cite.url, signal);
+    const cited = await fetchCitedPaperInfo(url, signal);
     if (signal.aborted) return;
 
     const parentExcerpt = findNearbyContext(pendingSel?.txt || cite.label || '', 900);
@@ -1408,8 +1570,8 @@ async function loadCitationPreview(cite) {
 
 function updatePopoverButtons() {
   const citeBtn = document.getElementById('cite-open-btn');
-  if (pendingCitation?.url) {
-    citeBtn.style.display = 'flex';
+  if (pendingCitation) {
+    citeBtn.style.display = pendingCitation.url ? 'flex' : 'none';
     citeBtn.textContent = '📖 Open citation';
     loadCitationPreview(pendingCitation);
   } else {
@@ -1530,7 +1692,7 @@ document.addEventListener('mouseup', e => {
     if (!rawRects.length) { hidePopover(); return; }
 
     pendingCitation = parseCitation(txt);
-    if (txt.length < 5 && !pendingCitation) { hidePopover(); return; }
+    if (txt.length < 2 && !pendingCitation) { hidePopover(); return; }
 
     const pageWrap = selEl.closest('.pdf-page-wrapper');
     if (pageWrap) {
