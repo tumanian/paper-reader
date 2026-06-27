@@ -273,6 +273,8 @@ body {
 #ask-btn:hover { background:#4a58e6; }
 #cite-open-btn { background:#243028; color:#9fd4b0; display:none; }
 #cite-open-btn:hover { background:#2e3d34; }
+.pop-btn-math { background:#2b2533; color:#d8c4f0; display:none; }
+.pop-btn-math:hover { background:#382f44; }
 #read-later-sel-btn { background:#2a2838; color:#c4c0e8; }
 #read-later-sel-btn:hover { background:#353348; }
 
@@ -434,6 +436,8 @@ body {
   <div class="pop-inner">
     <div id="cite-preview"></div>
     <button class="pop-btn" id="ask-btn">✦ Discuss</button>
+    <button class="pop-btn pop-btn-math" id="explain-math-btn">∑ Explain math</button>
+    <button class="pop-btn pop-btn-math" id="to-code-btn">{ } To code</button>
     <button class="pop-btn" id="cite-open-btn">📖 Open citation</button>
     <button class="pop-btn" id="read-later-sel-btn">🔖 Read later</button>
   </div>
@@ -626,6 +630,7 @@ async function persistCurrentDoc() {
       id: d.id, txt: d.txt, mode: d.mode, pageNum: d.pageNum,
       color: d.color, relRects: d.relRects, messages: d.messages,
       citationMeta: d.citationMeta || null,
+      mathKind: d.mathKind || null, mathTex: d.mathTex || null,
     })),
   };
   try {
@@ -724,6 +729,8 @@ let _summaryTimer = null, _summaryInFlight = false;
 let pendingCitation = null, returnToDocId = null, returnToDocName = null;
 let citePreviewAbort = null;
 let citePreviewTimer = null;
+let classifyTimer = null;
+let classifyToken = 0;
 let bibByNumber = {};
 let paperReferences = [];
 let citationFormat = null;
@@ -2869,30 +2876,65 @@ function shouldTryCitationPreview(text) {
   return t.length <= 100 && paperReferences.length > 0;
 }
 
+function updateMathButtons() {
+  const show = !!(pendingSel && pendingSel.math && pendingSel.math.isMath);
+  document.getElementById('explain-math-btn').style.display = show ? 'flex' : 'none';
+  document.getElementById('to-code-btn').style.display = show ? 'flex' : 'none';
+}
+
+// Ask Haiku to classify the raw selection. Returns 'math' | 'citation' | 'other'.
+async function classifySelection(text) {
+  const r = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task: 'classify-selection', selection: text }),
+  });
+  const data = await r.json();
+  if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
+  return data.kind || 'other';
+}
+
+// Single source of truth for which extra buttons show: hand the raw selection
+// to Haiku and route on its answer. Plain "Discuss" is always available.
 function updatePopoverButtons() {
   const citeBtn = document.getElementById('cite-open-btn');
   const previewEl = document.getElementById('cite-preview');
-  if (!pendingSel) {
-    citeBtn.style.display = 'none';
-    previewEl.style.display = 'none';
-    citePreviewAbort?.abort();
-    pendingCitation = null;
-    return;
-  }
-  buildPaperReferences();
-  if (!shouldTryCitationPreview(pendingSel.txt)) {
-    citeBtn.style.display = 'none';
-    previewEl.style.display = 'none';
-    citePreviewAbort?.abort();
-    pendingCitation = null;
-    return;
-  }
+
+  // Reset to the neutral state; classification will reveal the right controls.
+  document.getElementById('explain-math-btn').style.display = 'none';
+  document.getElementById('to-code-btn').style.display = 'none';
   citeBtn.style.display = 'none';
-  if (citePreviewTimer) clearTimeout(citePreviewTimer);
-  citePreviewTimer = setTimeout(() => {
-    citePreviewTimer = null;
-    loadCitationPreview();
-  }, 150);
+  previewEl.style.display = 'none';
+  citePreviewAbort?.abort();
+  if (citePreviewTimer) { clearTimeout(citePreviewTimer); citePreviewTimer = null; }
+  if (classifyTimer) { clearTimeout(classifyTimer); classifyTimer = null; }
+  pendingCitation = null;
+
+  if (!pendingSel) return;
+  const sel = pendingSel;
+  const text = (sel.txt || '').trim();
+  // Long prose isn't a formula or a citation — skip the roundtrip, Discuss only.
+  if (!text || text.length > 500) return;
+
+  buildPaperReferences();
+
+  const token = ++classifyToken;
+  classifyTimer = setTimeout(async () => {
+    classifyTimer = null;
+    let kind = 'other';
+    try { kind = await classifySelection(text); }
+    catch (e) { console.warn('[Classify] failed:', e.message); }
+    // Stale guard: bail if the selection changed while we were waiting.
+    if (token !== classifyToken || pendingSel !== sel) return;
+    console.info('[Classify]', { selection: text.slice(0, 120), kind });
+
+    sel.math = { isMath: kind === 'math', tex: sel.mathTex || '' };
+    if (kind === 'math') {
+      updateMathButtons();
+    } else if (kind === 'citation') {
+      loadCitationPreview();
+    }
+  }, 180);
 }
 
 function updateReturnButton() {
@@ -3015,7 +3057,8 @@ document.addEventListener('mouseup', e => {
       const cleanTxt = normalizePdfSelectionText(txt);
       pendingSel = {
         txt: cleanTxt, range: range.cloneRange(), mode:'pdf', pageNum:+pageWrap.dataset.page, wrapper: pageWrap,
-        relRects: rawRects.map(r => ({ left:r.left-pr.left, top:r.top-pr.top, width:r.width, height:r.height }))
+        relRects: rawRects.map(r => ({ left:r.left-pr.left, top:r.top-pr.top, width:r.width, height:r.height })),
+        mathTex: captureSelectionTex(range, selEl), math: null
       };
       positionPopover(rawRects[rawRects.length-1]);
       updatePopoverButtons();
@@ -3027,7 +3070,8 @@ document.addEventListener('mouseup', e => {
       const ar = aw.getBoundingClientRect();
       pendingSel = {
         txt, range: range.cloneRange(), mode:'web', pageNum:null, wrapper:aw,
-        relRects: rawRects.map(r => ({ left:r.left-ar.left, top:r.top-ar.top, width:r.width, height:r.height }))
+        relRects: rawRects.map(r => ({ left:r.left-ar.left, top:r.top-ar.top, width:r.width, height:r.height })),
+        mathTex: captureSelectionTex(range, selEl), math: null
       };
       positionPopover(rawRects[rawRects.length-1]);
       updatePopoverButtons();
@@ -3052,6 +3096,10 @@ function positionPopover(last) {
 }
 function hidePopover() {
   document.getElementById('selection-popover').style.display = 'none';
+  document.getElementById('explain-math-btn').style.display = 'none';
+  document.getElementById('to-code-btn').style.display = 'none';
+  if (classifyTimer) { clearTimeout(classifyTimer); classifyTimer = null; }
+  classifyToken++;  // invalidate any in-flight classification
   citePreviewAbort?.abort();
   pendingCitation = null;
   document.getElementById('cite-preview').style.display = 'none';
@@ -3077,6 +3125,39 @@ document.getElementById('ask-btn').addEventListener('click', () => {
   persistCurrentDoc();
   openChat(d.id);   // opens empty chat with the passage + input focused — NO auto-explain
 });
+// Seeded math discussions — reuse the exact discuss flow, but carry the formula
+// kind + captured TeX and fire an opening request through the cached full-paper
+// path in sendMessage().
+function startMathDiscussion(kind) {
+  if (!pendingSel) return;
+  const sel = pendingSel;
+  hidePopover();
+  window.getSelection()?.removeAllRanges();
+
+  const d = { id:Date.now(), txt:sel.txt, mode:sel.mode,
+               pageNum:sel.pageNum, color:nextColor(), wrapper:sel.wrapper,
+               relRects:sel.relRects, messages:[],
+               mathKind:kind, mathTex:(sel.math && sel.math.tex) || null };
+  discussions.push(d);
+  pendingSel = null;
+  pendingCitation = null;
+
+  console.groupCollapsed(`[Math] ${kind} · selected formula`);
+  console.log('rendered selection:', d.txt);
+  console.log('captured TeX:', d.mathTex || '(none — using rendered text)');
+  console.log('source mode:', d.mode);
+  console.groupEnd();
+
+  paintHighlight(d);
+  persistCurrentDoc();
+  openChat(d.id);
+
+  const input = document.getElementById('msg-input');
+  input.value = kind === 'code' ? 'Translate this formula to code.' : 'Explain this math.';
+  sendMessage();
+}
+document.getElementById('explain-math-btn').addEventListener('click', () => startMathDiscussion('explain'));
+document.getElementById('to-code-btn').addEventListener('click', () => startMathDiscussion('code'));
 document.getElementById('cite-open-btn').addEventListener('click', () => { openCitationPaper(); });
 document.getElementById('read-later-sel-btn').addEventListener('click', () => { addSelectionToReadLater(); });
 document.getElementById('read-later-paper-btn').addEventListener('click', async () => {
@@ -3237,6 +3318,50 @@ function buildDocContext(currentId) {
   return ctx;
 }
 
+// ═══════════════════════════════════════════════════════
+//  MATH DETECTION & CAPTURE
+// ═══════════════════════════════════════════════════════
+// Climb from a node to the nearest rendered-math container, if any.
+function findMathAncestor(node) {
+  let el = node && node.nodeType === 3 ? node.parentElement : node;
+  for (let i = 0; el && el !== document.body && i < 12; i++, el = el.parentElement) {
+    const tag = el.tagName ? el.tagName.toLowerCase() : '';
+    if (tag === 'math' || tag === 'mjx-container') return el;
+    // className can be an SVGAnimatedString on MathML/SVG nodes
+    const cls = el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className;
+    if (typeof cls === 'string' && /\b(MathJax|katex)\b|\bmjx-/.test(cls)) return el;
+  }
+  return null;
+}
+
+// Pull the real TeX source for a rendered formula. ar5iv / MathJax / KaTeX all
+// embed it in <annotation encoding="application/x-tex">; KaTeX also exposes
+// data-tex / aria attributes as a fallback.
+function extractTexFromMathNode(node) {
+  let el = node;
+  for (let i = 0; el && el !== document.body && i < 6; i++, el = el.parentElement) {
+    if (!el.querySelector) continue;
+    const ann = el.querySelector('annotation[encoding="application/x-tex"]');
+    if (ann && ann.textContent.trim()) return ann.textContent.trim();
+    const dataTex = el.getAttribute && el.getAttribute('data-tex');
+    if (dataTex && dataTex.trim()) return dataTex.trim();
+    const nested = el.querySelector('[data-tex]');
+    if (nested && nested.getAttribute('data-tex').trim()) return nested.getAttribute('data-tex').trim();
+  }
+  return '';
+}
+
+// Capture the real TeX for a selection if it intersects a rendered-math node.
+// This is just source extraction — whether the selection *is* math is decided
+// by Haiku (classify-selection), not here.
+function captureSelectionTex(range, anchorEl) {
+  const probes = [anchorEl, range && range.startContainer, range && range.endContainer,
+                  range && range.commonAncestorContainer];
+  let node = null;
+  for (const p of probes) { node = findMathAncestor(p); if (node) break; }
+  return node ? extractTexFromMathNode(node) : '';
+}
+
 // Locate the highlight inside the full paper text and return the surrounding
 // window. Used as a fallback when the full paper is too big to send, and also
 // helps Claude resolve references like "this", "the above equation", etc.
@@ -3329,6 +3454,37 @@ async function sendMessage() {
     });
   }
 
+  // 3b) Math framing (when the thread was started from a formula). Sits next to
+  // the cached full-document block so notation resolves against the whole paper.
+  if (d.mathKind) {
+    const texLine = d.mathTex ? `\nLaTeX source of the selected formula:\n${d.mathTex}\n` : '';
+    if (d.mathKind === 'code') {
+      systemBlocks.push({
+        type: 'text',
+        text:
+          `=== MATH-TO-CODE REQUEST ===\n` +
+          `The highlighted passage is a mathematical formula from this paper.${texLine}` +
+          `Translate it into readable PyTorch/NumPy-style code with named variables and tensor ` +
+          `shapes in comments; use einsum where it maps cleanly. Lead with the code block, then ` +
+          `one or two lines mapping the code back to the notation. Resolve every symbol against the ` +
+          `FULL DOCUMENT above.`,
+      });
+    } else {
+      systemBlocks.push({
+        type: 'text',
+        text:
+          `=== MATH EXPLANATION REQUEST ===\n` +
+          `The highlighted passage is a mathematical formula from this paper.${texLine}` +
+          `Explain it tightly in three tiers, skipping obvious terms:\n` +
+          `1. One sentence in plain language: what the formula does.\n` +
+          `2. Term-by-term breakdown: for each symbol, what it is, its shape/dimensions if inferable, ` +
+          `and where it was defined earlier in THIS paper (name the section or equation if findable).\n` +
+          `3. Why it's here: what it accomplishes in the paper's argument.\n` +
+          `Resolve every symbol against the FULL DOCUMENT above.`,
+      });
+    }
+  }
+
   // 4) The specific highlight + cross-highlight memory (small, dynamic)
   systemBlocks.push({
     type: 'text',
@@ -3337,13 +3493,32 @@ async function sendMessage() {
       buildDocContext(d.id),
   });
 
+  const apiMessages = d.messages.filter(m=>!m.hidden).slice(-14).map(({role,content})=>({role,content}));
+  if (d.mathKind) {
+    const mathBlock = systemBlocks.find(b => /=== MATH/.test(b.text || ''));
+    console.groupCollapsed(`[Math] ${d.mathKind} · → Claude`);
+    console.log('user message:', txt);
+    console.log('math system block:', mathBlock?.text);
+    console.log('TeX sent:', d.mathTex || '(none)');
+    console.log('paper context:', paper.kind === 'full' ? `full (${paper.text.length} chars, cached)` : paper.kind);
+    console.log('conversation turns sent:', apiMessages.length);
+    console.groupEnd();
+  }
   try {
-    const reply = await callClaude(systemBlocks, d.messages.filter(m=>!m.hidden).slice(-14).map(({role,content})=>({role,content})));
+    const reply = await callClaude(systemBlocks, apiMessages);
+    if (d.mathKind) {
+      console.groupCollapsed(`[Math] ${d.mathKind} · ← Claude`);
+      console.log(reply);
+      console.groupEnd();
+    }
     d.messages.push({role:'assistant',content:reply});
     loader.remove(); addMsg('assistant',reply);
     persistCurrentDoc(); renderList();
     scheduleSummaryUpdate();
-  } catch(e) { loader.remove(); addMsg('assistant',`Error: ${e.message}`); }
+  } catch(e) {
+    if (d.mathKind) console.warn(`[Math] ${d.mathKind} · roundtrip failed:`, e.message);
+    loader.remove(); addMsg('assistant',`Error: ${e.message}`);
+  }
   document.getElementById('send-btn').disabled = false;
 }
 

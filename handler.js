@@ -320,6 +320,40 @@ async function callHaiku({ system, userContent, max_tokens = 400 }) {
   return { status: 200, text: anthropicText(result.json), raw: result.json };
 }
 
+async function callClassifySelection(body) {
+  const sel = String(body?.selection || '').trim();
+  if (!sel) return { status: 400, json: { error: 'classify-selection needs a selection.' } };
+
+  const system =
+    'You classify a short snippet a reader selected inside an academic paper. ' +
+    'Reply with a single JSON object only — no markdown, no extra text: {"kind":"math"|"citation"|"other"}. ' +
+    '"math": the selection is or centers on a mathematical formula, equation, or notation ' +
+    '(operators, sub/superscripts, fractions, integrals/sums, Greek letters, LaTeX commands). ' +
+    '"citation": the selection is an in-text reference pointing to another work, e.g. "[12]", ' +
+    '"Vaswani et al., 2017", "(Smith & Lee, 2020)". ' +
+    '"other": ordinary prose, a heading, or anything else. ' +
+    'Choose the single best label. If a formula also contains author names, prefer "math".';
+
+  const result = await callHaiku({ max_tokens: 20, system, userContent: sel.slice(0, 600) });
+
+  console.info('[Classify] haiku', {
+    selection: sel.slice(0, 160),
+    status: result.status,
+    rawResponse: result.text != null ? String(result.text) : null,
+  });
+
+  if (result.status !== 200) return result;
+
+  const parsed = parseJsonFromText(result.text);
+  let kind = parsed && typeof parsed.kind === 'string' ? parsed.kind.toLowerCase().trim() : '';
+  if (!['math', 'citation', 'other'].includes(kind)) {
+    // tolerate a bare word answer
+    const m = String(result.text || '').toLowerCase().match(/math|citation|other/);
+    kind = m ? m[0] : 'other';
+  }
+  return { status: 200, json: { kind } };
+}
+
 async function callCheapSummary(body) {
   const { text, max_tokens } = body || {};
   if (!text || typeof text !== 'string' || !text.trim()) {
@@ -759,6 +793,7 @@ async function callCitationDetect(body) {
 }
 
 async function handleChatRequest(body) {
+  if (body?.task === 'classify-selection') return callClassifySelection(body);
   if (body?.task === 'summarize') return callCheapSummary(body);
   if (body?.task === 'citation-match') return callCitationMatch(body);
   if (body?.task === 'citation-preview') return callCitationPreview(body);
