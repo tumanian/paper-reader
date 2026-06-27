@@ -7,7 +7,7 @@
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
-const { handleChatRequest, handleFetchRequest } = require('./handler');
+const { handleChatRequest, handleFetchRequest, handleFetchPdfRequest } = require('./handler');
 
 const PORT = process.env.PORT || 3000;
 
@@ -30,8 +30,28 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── PDF fetch proxy ───────────────────────────────────
+  if (req.url.startsWith('/api/fetch-pdf') && req.method === 'GET') {
+    const u = new URL(req.url, 'http://localhost');
+    const target = u.searchParams.get('url');
+    const result = await handleFetchPdfRequest(target);
+    if (result.body) {
+      const headers = {
+        'Content-Type': result.contentType || 'application/pdf',
+        'Access-Control-Allow-Origin': '*',
+      };
+      if (result.finalUrl) headers['X-Final-Url'] = result.finalUrl;
+      res.writeHead(result.status, headers);
+      res.end(result.body);
+      return;
+    }
+    res.writeHead(result.status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(result.json));
+    return;
+  }
+
   // ── URL fetch proxy (avoids brittle public CORS proxies) ──
-  if (req.url.startsWith('/api/fetch') && req.method === 'GET') {
+  if (req.url.startsWith('/api/fetch?') && req.method === 'GET') {
     const u = new URL(req.url, 'http://localhost');
     const target = u.searchParams.get('url');
     const { status, json } = await handleFetchRequest(target);

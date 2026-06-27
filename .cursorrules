@@ -7,7 +7,7 @@ server-side. It runs locally and deploys to Vercel with no code changes.
 The app needs an Anthropic API key in the environment. Start with:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... GROQ_API_KEY=gsk_... \
+ANTHROPIC_API_KEY=sk-ant-... \
 SUPABASE_URL=https://xxx.supabase.co SUPABASE_ANON_KEY=eyJ... \
 node dev-server.js
 ```
@@ -16,29 +16,27 @@ Then open http://localhost:3000. No `npm install` is needed — the local server
 has zero dependencies. Stop with Ctrl+C.
 
 If the chat returns "ANTHROPIC_API_KEY not set", the key wasn't passed on the
-command line. Summaries need `GROQ_API_KEY` (optional). Everything except API
-calls (PDF rendering, URL loading, highlighting, saved history) works without keys.
+command line. Everything except API calls (PDF rendering, URL loading,
+highlighting, saved history) works without a key.
 
 ## Deploy to Vercel
 ```bash
 npm i -g vercel        # once
 vercel                 # first deploy, follow prompts
 vercel env add ANTHROPIC_API_KEY   # paste key, select all environments
-vercel env add GROQ_API_KEY        # optional — library conversation summaries
 vercel env add SUPABASE_URL
 vercel env add SUPABASE_ANON_KEY
 vercel --prod          # redeploy to production with the key live
 ```
 
-The `api/chat.js` serverless function routes chat to Anthropic and summaries to
-Groq via `handler.js`. The frontend always calls `/api/chat`, so local and prod
-are identical.
+The `api/chat.js` serverless function routes chat to Anthropic via `handler.js`.
+The frontend always calls `/api/chat`, so local and prod are identical.
 
 ## Architecture (don't break these invariants)
 - `index.html`  — entire frontend: PDF.js + Readability.js + reader/chat UI.
   All app logic is one inline <script>. No build step.
-- `handler.js`  — shared proxy; routes highlight chat to Anthropic and
-  `task: 'summarize'` requests to Groq. The `system` field may be a STRING or
+- `handler.js`  — shared proxy; routes highlight chat to Sonnet and cheap tasks
+  (`task: 'summarize'`, citation match/preview) to Haiku. The `system` field may be a STRING or
   an ARRAY of content blocks; the full-paper block carries
   `cache_control: { type: 'ephemeral' }` for prompt caching. Pass system through
   untouched.

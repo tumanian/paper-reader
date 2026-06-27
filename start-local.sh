@@ -25,7 +25,7 @@ if [[ -z "$ENV_FILE" ]]; then
   echo ""
   echo "  Setup (once):"
   echo "    cp .env.local.example .env.local"
-  echo "    # edit .env.local — add ANTHROPIC_API_KEY (+ optional GROQ, Supabase)"
+  echo "    # edit .env.local — add ANTHROPIC_API_KEY (+ optional Supabase)"
   echo ""
   echo "  Keys live in Vercel → paper-reader → Settings → Environment Variables"
   echo "  Supabase URL: https://pmyodrwlvbqbukirecjh.supabase.co"
@@ -42,11 +42,11 @@ echo "  ✓ Loaded $ENV_FILE"
 if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
   echo "  ⚠️  ANTHROPIC_API_KEY missing — chat will error (PDF/URL load still works)"
 fi
-if [[ -z "${GROQ_API_KEY:-}" ]]; then
-  echo "  ℹ️  GROQ_API_KEY missing — citation preview + library summaries use fallbacks"
-fi
 if [[ -z "${SUPABASE_URL:-}" || -z "${SUPABASE_ANON_KEY:-}" ]]; then
   echo "  ℹ️  Supabase not configured — browser-only storage"
+elif [[ "${SUPABASE_ANON_KEY}" == *"your-"* || ${#SUPABASE_ANON_KEY} -lt 40 ]]; then
+  echo "  ⚠️  SUPABASE_ANON_KEY looks like a placeholder — cloud sync will show \"Invalid API key\""
+  echo "     Paste the anon/public key from Supabase → Settings → API into .env.local"
 fi
 
 export PORT="${PORT:-3000}"

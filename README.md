@@ -12,8 +12,8 @@ ask follow-ups in a threaded chat. Each highlight keeps its own conversation.
 - **Cloud sync** — library, chats, and PDFs sync via Supabase (Postgres + Storage)
 
 Your Anthropic API key stays server-side — it's never in the frontend code.
-Optional: a Groq key powers cheap per-paper conversation summaries in the library
-(Claude is still used for highlight chat).
+Haiku handles cheap tasks (library summaries, citation matching/preview); Sonnet
+powers highlight chat and citation fallbacks.
 
 ---
 
@@ -46,7 +46,6 @@ Requires Node 18+.
 ```bash
 cd paper-reader
 ANTHROPIC_API_KEY=sk-ant-your-key-here \
-GROQ_API_KEY=gsk_... \
 SUPABASE_URL=https://xxxx.supabase.co \
 SUPABASE_ANON_KEY=eyJhbG... \
 node dev-server.js
@@ -71,8 +70,7 @@ Environment variables (Vercel dashboard → Settings → Environment Variables):
 
 | Variable | Required |
 |---|---|
-| `ANTHROPIC_API_KEY` | Yes (chat) |
-| `GROQ_API_KEY` | Optional (summaries) |
+| `ANTHROPIC_API_KEY` | Yes (chat + summaries + citations) |
 | `SUPABASE_URL` | Yes (cloud sync) |
 | `SUPABASE_ANON_KEY` | Yes (cloud sync) |
 
@@ -85,7 +83,7 @@ Then `vercel --prod`.
 ```
 index.html        frontend (PDF.js + Readability.js + reader/chat UI)
 store.js          Supabase + local persistence layer
-handler.js        Anthropic/Groq proxy logic
+handler.js        Anthropic proxy (Sonnet + Haiku)
 dev-server.js     local dev server (static + /api/*)
 api/chat.js       Vercel — chat proxy
 api/config.js     Vercel — public Supabase config
@@ -102,4 +100,4 @@ vercel.json       Vercel routing config
   backup in `localStorage` is kept for resilience. Schema migrations run in the
   browser on load; cloud migration runs once per user session.
 - Web fetching uses public CORS proxies. If a URL fails, try the PDF.
-- Chat model: `claude-sonnet-4-6`. Summary model: `llama-3.1-8b-instant` (Groq).
+- Chat model: `claude-sonnet-4-6`. Cheap tasks: `claude-haiku-4-5`.

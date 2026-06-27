@@ -10,12 +10,16 @@ window.PaperStore = (function () {
   let useCloud = false;
   let ready = false;
   let lastSyncError = null;
+  let cloudRefreshPromise = null;
   let docs = {};
   let readLater = [];
 
   function friendlyError(e) {
     const msg = e?.message || String(e);
     const code = e?.code || '';
+    if (/invalid api key/i.test(msg)) {
+      return 'Supabase anon key is invalid — paste the real key from Supabase → Settings → API into .env.local (or remove Supabase vars for local-only mode).';
+    }
     if (code === 'PGRST205' || (msg.includes('relation') && msg.includes('does not exist'))) {
       return 'Database tables missing — run supabase/schema.sql (or migrate-to-email.sql).';
     }
@@ -28,12 +32,16 @@ window.PaperStore = (function () {
     return msg;
   }
 
-  function setSyncError(e) {
-    lastSyncError = e ? friendlyError(e) : null;
-    if (e) console.error('Paper Reader sync error:', e);
+  function notifyChange() {
     if (typeof window.onPaperStoreSyncChange === 'function') {
       window.onPaperStoreSyncChange(getSyncStatus());
     }
+  }
+
+  function setSyncError(e) {
+    lastSyncError = e ? friendlyError(e) : null;
+    if (e) console.error('Paper Reader sync error:', e);
+    notifyChange();
   }
 
   function emailPathKey(email) {
@@ -126,6 +134,7 @@ window.PaperStore = (function () {
       url: doc.url || null,
       conversation_summary: doc.conversationSummary || null,
       summary_message_count: doc.summaryMessageCount || 0,
+      citation_format: doc.citationFormat || null,
       updated_at: new Date(doc.updated || Date.now()).toISOString(),
     };
   }
@@ -140,6 +149,7 @@ window.PaperStore = (function () {
       updated: new Date(row.updated_at).getTime(),
       conversationSummary: row.conversation_summary,
       summaryMessageCount: row.summary_message_count || 0,
+      citationFormat: row.citation_format || null,
       discussions: discussions || [],
     };
   }
@@ -149,25 +159,21 @@ window.PaperStore = (function () {
   async function loadFromCloud() {
     if (!ownerEmail) return;
 
-    const { data: docRows, error: docErr } = await supabase
-      .from('documents')
-      .select('*')
-      .eq('owner_email', ownerEmail)
-      .order('updated_at', { ascending: false });
-    if (docErr) throw docErr;
+    const [docRes, discRes, msgRes, rlRes] = await Promise.all([
+      supabase.from('documents').select('*').eq('owner_email', ownerEmail).order('updated_at', { ascending: false }),
+      supabase.from('discussions').select('*').eq('owner_email', ownerEmail),
+      supabase.from('messages').select('*').eq('owner_email', ownerEmail).order('sort_order', { ascending: true }),
+      supabase.from('read_later').select('*').eq('owner_email', ownerEmail).order('added_at', { ascending: false }),
+    ]);
+    if (docRes.error) throw docRes.error;
+    if (discRes.error) throw discRes.error;
+    if (msgRes.error) throw msgRes.error;
+    if (rlRes.error) throw rlRes.error;
 
-    const { data: discRows, error: discErr } = await supabase
-      .from('discussions')
-      .select('*')
-      .eq('owner_email', ownerEmail);
-    if (discErr) throw discErr;
-
-    const { data: msgRows, error: msgErr } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('owner_email', ownerEmail)
-      .order('sort_order', { ascending: true });
-    if (msgErr) throw msgErr;
+    const docRows = docRes.data;
+    const discRows = discRes.data;
+    const msgRows = msgRes.data;
+    const rlRows = rlRes.data;
 
     const msgsByDisc = {};
     for (const m of msgRows || []) {
@@ -199,13 +205,6 @@ window.PaperStore = (function () {
       store[row.id] = rowToDoc(row, discsByDoc[row.id] || []);
     }
     docs = store;
-
-    const { data: rlRows, error: rlErr } = await supabase
-      .from('read_later')
-      .select('*')
-      .eq('owner_email', ownerEmail)
-      .order('added_at', { ascending: false });
-    if (rlErr) throw rlErr;
 
     readLater = (rlRows || []).map((r) => ({
       id: r.id,
@@ -281,17 +280,8 @@ window.PaperStore = (function () {
     if (!useCloud || !ownerEmail) return true;
     let ok = true;
     for (const doc of Object.values(docs)) {
-      try {
-        await saveDocToCloud(doc);
-        const blob = await idbGetLocal(doc.id);
-        if (blob && doc.mode === 'pdf') {
-          try { await putPdfToCloud(doc.id, blob); }
-          catch (e) { ok = false; setSyncError(e); }
-        }
-      } catch (e) {
-        ok = false;
-        setSyncError(e);
-      }
+      try { await saveDocToCloud(doc); }
+      catch (e) { ok = false; setSyncError(e); }
     }
     for (const item of readLater) {
       try { await saveReadLaterToCloud(item); }
@@ -299,6 +289,66 @@ window.PaperStore = (function () {
     }
     if (ok) setSyncError(null);
     return ok;
+  }
+
+  async function refreshFromCloud() {
+    if (!useCloud || !ownerEmail || !supabase) return;
+
+    const localDocsSnapshot = loadLocalDocs();
+    const localRlSnapshot = loadLocalReadLater();
+    let cloudDocs = {};
+
+    try {
+      await loadFromCloud();
+      cloudDocs = { ...docs };
+    } catch (e) {
+      setSyncError(e);
+      mergeLocalDocs();
+      mergeLocalReadLater();
+      saveLocalDocs(docs);
+      saveLocalReadLater(readLater);
+      return;
+    }
+
+    const toPush = [];
+    for (const [id, localDoc] of Object.entries(localDocsSnapshot)) {
+      const cloudDoc = cloudDocs[id];
+      if (!cloudDoc || (localDoc.updated || 0) > (cloudDoc.updated || 0)) {
+        toPush.push(localDoc);
+      }
+    }
+
+    mergeLocalDocs();
+    mergeLocalReadLater();
+
+    const cloudRlIds = new Set(readLater.map((i) => i.id));
+    const rlToPush = localRlSnapshot.filter((i) => !cloudRlIds.has(i.id));
+
+    saveLocalDocs(docs);
+    saveLocalReadLater(readLater);
+
+    let ok = true;
+    for (const doc of toPush) {
+      try { await saveDocToCloud(doc); }
+      catch (e) { ok = false; setSyncError(e); }
+    }
+    for (const item of rlToPush) {
+      try { await saveReadLaterToCloud(item); }
+      catch (e) { ok = false; setSyncError(e); }
+    }
+    if (ok) setSyncError(null);
+  }
+
+  function startCloudRefresh() {
+    if (!useCloud || !ownerEmail || !supabase) return Promise.resolve();
+    if (cloudRefreshPromise) return cloudRefreshPromise;
+    notifyChange();
+    cloudRefreshPromise = refreshFromCloud()
+      .finally(() => {
+        cloudRefreshPromise = null;
+        notifyChange();
+      });
+    return cloudRefreshPromise;
   }
 
   async function deleteDocFromCloud(docId) {
@@ -319,59 +369,39 @@ window.PaperStore = (function () {
   }
 
   async function reloadForEmail() {
-    let loadFailed = false;
-    try {
-      await loadFromCloud();
-    } catch (e) {
-      loadFailed = true;
-      setSyncError(e);
-      docs = {};
-      readLater = [];
-    }
-    mergeLocalDocs();
-    mergeLocalReadLater();
-    saveLocalDocs(docs);
-    saveLocalReadLater(readLater);
-    const syncOk = await syncAllToCloud();
-    if (!loadFailed && syncOk) setSyncError(null);
+    docs = loadLocalDocs();
+    readLater = loadLocalReadLater();
+    return startCloudRefresh();
   }
 
   // ── Public API ────────────────────────────────────────────────────────
 
   async function init() {
+    ownerEmail = getEmail();
+    docs = loadLocalDocs();
+    readLater = loadLocalReadLater();
+    ready = true;
+
     try {
       const r = await fetch('/api/config');
       const cfg = await r.json();
       if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
-        ownerEmail = getEmail();
-        docs = loadLocalDocs();
-        readLater = loadLocalReadLater();
-        ready = true;
         return { mode: 'local', email: ownerEmail };
       }
 
       supabase = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
-      ownerEmail = getEmail();
 
       if (!ownerEmail) {
-        docs = loadLocalDocs();
-        readLater = loadLocalReadLater();
-        ready = true;
-        return { mode: 'cloud', needsEmail: true };
+        return { mode: 'cloud', needsEmail: true, email: null };
       }
 
       useCloud = true;
-      await reloadForEmail();
-      ready = true;
+      startCloudRefresh();
       return getSyncStatus();
     } catch (e) {
       console.warn('Paper Reader: cloud init failed, falling back to local:', e);
       setSyncError(e);
-      ownerEmail = getEmail();
-      docs = loadLocalDocs();
-      readLater = loadLocalReadLater();
       useCloud = false;
-      ready = true;
       return { mode: 'local', error: friendlyError(e), email: ownerEmail };
     }
   }
@@ -386,7 +416,10 @@ window.PaperStore = (function () {
       return getSyncStatus();
     }
 
-    await reloadForEmail();
+    docs = loadLocalDocs();
+    readLater = loadLocalReadLater();
+    notifyChange();
+    startCloudRefresh();
     if (typeof window.onPaperStoreAuthChange === 'function') {
       window.onPaperStoreAuthChange();
     }
@@ -410,6 +443,7 @@ window.PaperStore = (function () {
       useCloud: useCloud && !!ownerEmail,
       email: ownerEmail,
       needsEmail: supabase && !ownerEmail,
+      syncing: !!cloudRefreshPromise,
       lastSyncError,
       docCount: Object.keys(docs).length,
     };
