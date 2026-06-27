@@ -29,6 +29,7 @@ create table if not exists discussions (
   color         jsonb,
   rel_rects     jsonb not null default '[]'::jsonb,
   citation_meta jsonb,
+  math          jsonb,
   created_at    timestamptz not null default now()
 );
 

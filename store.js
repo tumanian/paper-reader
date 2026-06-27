@@ -196,6 +196,8 @@ window.PaperStore = (function () {
         color: d.color,
         relRects: d.rel_rects || [],
         citationMeta: d.citation_meta || null,
+        mathKind: d.math?.kind || null,
+        mathTex: d.math?.tex || null,
         messages: msgsByDisc[d.id] || [],
       });
     }
@@ -219,7 +221,24 @@ window.PaperStore = (function () {
     }));
   }
 
+  // Serialize cloud saves per document. saveDocToCloud does a delete-then-insert
+  // of discussions, so two overlapping saves for the same doc (e.g. seeding a
+  // discussion then immediately sending its first message) would both delete and
+  // then both insert the same discussion id → duplicate-key (Postgres 23505).
+  // Chaining keeps them strictly sequential, last write wins with full data.
+  const cloudSaveChains = {};
   async function saveDocToCloud(doc) {
+    const prev = cloudSaveChains[doc.id] || Promise.resolve();
+    const run = prev.catch(() => {}).then(() => saveDocToCloudInner(doc));
+    cloudSaveChains[doc.id] = run;
+    try {
+      return await run;
+    } finally {
+      if (cloudSaveChains[doc.id] === run) delete cloudSaveChains[doc.id];
+    }
+  }
+
+  async function saveDocToCloudInner(doc) {
     const { error: docErr } = await supabase.from('documents').upsert(docToRow(doc));
     if (docErr) throw docErr;
 
@@ -231,7 +250,7 @@ window.PaperStore = (function () {
     if (delErr) throw delErr;
 
     for (const d of doc.discussions || []) {
-      const { error: discErr } = await supabase.from('discussions').insert({
+      const { error: discErr } = await supabase.from('discussions').upsert({
         id: d.id,
         document_id: doc.id,
         owner_email: ownerEmail,
@@ -241,6 +260,7 @@ window.PaperStore = (function () {
         color: d.color || null,
         rel_rects: d.relRects || [],
         citation_meta: d.citationMeta || null,
+        math: d.mathKind ? { kind: d.mathKind, tex: d.mathTex || null } : null,
       });
       if (discErr) throw discErr;
 
