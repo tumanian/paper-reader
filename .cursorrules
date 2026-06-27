@@ -3,6 +3,12 @@
 This is a static frontend + a tiny Node proxy that holds the Anthropic API key
 server-side. It runs locally and deploys to Vercel with no code changes.
 
+## Working agreement
+- When the user says a piece of functionality is "good" / "working" (or
+  similar), proactively remind them to commit that chunk before moving on.
+  Prefer small, focused commits per working feature over one large catch-up
+  commit. Only commit when the user confirms.
+
 ## Run it locally
 The app needs an Anthropic API key in the environment. Start with:
 
