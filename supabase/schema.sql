@@ -57,8 +57,35 @@ create table if not exists read_later (
   added_at      timestamptz not null default now()
 );
 
+create table if not exists ratings (
+  id                 text primary key,
+  owner_email        text not null,
+  rating             text not null check (rating in ('up', 'down')),
+  reason             text,
+  selected_text      text,
+  selected_text_kind text,
+  math_kind          text,
+  question           text,
+  response           text,
+  model              text,
+  doc_id             text,
+  paper_title        text,
+  paper_url          text,
+  discussion_id      bigint,
+  message_index      int,
+  citation_meta      jsonb,
+  session_id         text,
+  user_id            text,
+  schema_version     int not null default 1,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
+);
+
 create index if not exists documents_email_updated_idx
   on documents (owner_email, updated_at desc);
+
+create index if not exists ratings_email_updated_idx
+  on ratings (owner_email, updated_at desc);
 
 create index if not exists discussions_document_idx
   on discussions (document_id);
@@ -76,6 +103,7 @@ alter table documents   enable row level security;
 alter table discussions enable row level security;
 alter table messages    enable row level security;
 alter table read_later  enable row level security;
+alter table ratings     enable row level security;
 
 drop policy if exists "documents_own" on documents;
 drop policy if exists "discussions_own" on discussions;
@@ -85,11 +113,13 @@ drop policy if exists "documents_open" on documents;
 drop policy if exists "discussions_open" on discussions;
 drop policy if exists "messages_open" on messages;
 drop policy if exists "read_later_open" on read_later;
+drop policy if exists "ratings_open" on ratings;
 
 create policy "documents_open" on documents for all using (true) with check (true);
 create policy "discussions_open" on discussions for all using (true) with check (true);
 create policy "messages_open" on messages for all using (true) with check (true);
 create policy "read_later_open" on read_later for all using (true) with check (true);
+create policy "ratings_open" on ratings for all using (true) with check (true);
 
 -- ── Storage (PDFs) ────────────────────────────────────────────────────────
 -- Create bucket "pdfs" in Dashboard → Storage → New bucket (private).

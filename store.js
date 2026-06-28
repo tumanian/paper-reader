@@ -280,6 +280,86 @@ window.PaperStore = (function () {
     }
   }
 
+  function ratingToRow(rec) {
+    return {
+      id: rec.id,
+      owner_email: ownerEmail,
+      rating: rec.rating,
+      reason: rec.reason || null,
+      selected_text: rec.selectedText || '',
+      selected_text_kind: rec.selectedTextKind || 'text',
+      math_kind: rec.mathKind || null,
+      question: rec.question || '',
+      response: rec.response || '',
+      model: rec.model || null,
+      doc_id: rec.docId || null,
+      paper_title: rec.paperTitle || null,
+      paper_url: rec.paperUrl || null,
+      discussion_id: rec.discussionId ?? null,
+      message_index: rec.messageIndex ?? null,
+      citation_meta: rec.citationMeta || null,
+      session_id: rec.sessionId || null,
+      user_id: rec.userId || null,
+      schema_version: rec.schemaVersion || 1,
+      created_at: new Date(rec.createdAt || Date.now()).toISOString(),
+      updated_at: new Date(rec.updatedAt || Date.now()).toISOString(),
+    };
+  }
+
+  function rowToRating(row) {
+    return {
+      id: row.id,
+      schemaVersion: row.schema_version || 1,
+      rating: row.rating,
+      reason: row.reason || null,
+      selectedText: row.selected_text || '',
+      selectedTextKind: row.selected_text_kind || 'text',
+      mathKind: row.math_kind || null,
+      question: row.question || '',
+      response: row.response || '',
+      model: row.model || null,
+      docId: row.doc_id || null,
+      paperTitle: row.paper_title || null,
+      paperUrl: row.paper_url || null,
+      discussionId: row.discussion_id,
+      messageIndex: row.message_index,
+      citationMeta: row.citation_meta || null,
+      sessionId: row.session_id || null,
+      userId: row.user_id || null,
+      createdAt: row.created_at ? new Date(row.created_at).getTime() : null,
+      updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : null,
+    };
+  }
+
+  // ── Ratings ("golden set") cloud mirror ──────────────────────────────────
+  // Local-first: the frontend always writes to its own IndexedDB; when cloud is
+  // configured we also upsert here so ratings aggregate across devices.
+  async function saveRating(rec) {
+    if (!useCloud || !ownerEmail) return;
+    try {
+      const { error } = await supabase.from('ratings').upsert(ratingToRow(rec));
+      if (error) throw error;
+      setSyncError(null);
+    } catch (e) { setSyncError(e); throw e; }
+  }
+
+  async function deleteRating(id) {
+    if (!useCloud || !ownerEmail) return;
+    try {
+      const { error } = await supabase.from('ratings').delete().eq('id', id).eq('owner_email', ownerEmail);
+      if (error) throw error;
+    } catch (e) { setSyncError(e); throw e; }
+  }
+
+  async function getRatingsFromCloud() {
+    if (!useCloud || !ownerEmail) return [];
+    const { data, error } = await supabase
+      .from('ratings').select('*').eq('owner_email', ownerEmail)
+      .order('updated_at', { ascending: false });
+    if (error) throw error;
+    return (data || []).map(rowToRating);
+  }
+
   async function saveReadLaterToCloud(item) {
     const { error } = await supabase.from('read_later').upsert({
       id: item.id,
@@ -592,6 +672,9 @@ window.PaperStore = (function () {
     addReadLater,
     removeReadLater,
     clearReadLater,
+    saveRating,
+    deleteRating,
+    getRatingsFromCloud,
     putPdf,
     getPdf,
     syncAllToCloud,

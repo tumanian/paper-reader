@@ -1,0 +1,84 @@
+{
+  "_comment": "Static onboarding curation, keyed by paper. Authored once — NOT generated per visit. Snippets are VERBATIM substrings of the rendered article so the in-page locator can place highlights. URLs are web-rendered (distill.pub / ar5iv.org) where DOM locating is reliable; arXiv /abs/ links render as PDF and won't auto-place. To add a paper: add it under \"papers\" and reference its id from a track.",
+  "tracks": [
+    {
+      "id": "interp",
+      "label": "Interpretability / how AI works",
+      "blurb": "Peek inside the model.",
+      "paperIds": ["zoom-in-circuits"]
+    },
+    {
+      "id": "classic",
+      "label": "Classic ML / foundational papers",
+      "blurb": "The ideas everything else is built on.",
+      "paperIds": ["attention-is-all-you-need"]
+    },
+    {
+      "id": "fun",
+      "label": "Fun science",
+      "blurb": "Delightfully unexpected results.",
+      "paperIds": ["feature-visualization"]
+    }
+  ],
+  "papers": {
+    "zoom-in-circuits": {
+      "paperId": "zoom-in-circuits",
+      "title": "Zoom In: An Introduction to Circuits",
+      "url": "https://distill.pub/2020/circuits/zoom-in/",
+      "hook": "What if individual neurons — and the connections between them — are legible algorithms?",
+      "items": [
+        {
+          "snippet": "rich inner world within our models",
+          "type": "prose",
+          "note": "The motivation for the whole program: weights aren't a black box — there's a legible inner world to map."
+        },
+        {
+          "snippet": "What if we treated individual neurons, even individual weights, as being worthy of serious investigation?",
+          "type": "prose",
+          "note": "The mindset shift that kicked off mechanistic interpretability — zoom in instead of explaining the whole net at once."
+        },
+        {
+          "snippet": "You can watch a circle detector be assembled from curves.",
+          "type": "prose",
+          "note": "A concrete 'circuit': simple features composing into a more complex one, like parts on an assembly line."
+        }
+      ]
+    },
+    "attention-is-all-you-need": {
+      "paperId": "attention-is-all-you-need",
+      "title": "Attention Is All You Need",
+      "url": "https://ar5iv.org/abs/1706.03762",
+      "hook": "The 2017 paper that introduced the Transformer and reshaped modern AI.",
+      "items": [
+        {
+          "snippet": "We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.",
+          "type": "prose",
+          "note": "The core bet: drop RNNs and convolutions entirely, lean on attention alone. Ask why that was so radical in 2017."
+        },
+        {
+          "snippet": "The output is computed as a weighted sum of the values, where the weight assigned to each value is computed by a compatibility function of the query with the corresponding key.",
+          "type": "prose",
+          "note": "Attention in plain English, stated before any math. Tip: select the Attention(Q,K,V) equation just below for the 'Explain math' / 'To code' tools."
+        }
+      ]
+    },
+    "feature-visualization": {
+      "paperId": "feature-visualization",
+      "title": "Feature Visualization",
+      "url": "https://distill.pub/2017/feature-visualization/",
+      "hook": "Hallucinate the images that make each neuron fire — and see what the network is really looking for.",
+      "items": [
+        {
+          "snippet": "Starting from random noise, we optimize an image to activate a particular neuron",
+          "type": "prose",
+          "note": "The trick in one sentence: optimize the image, not the weights, to reveal what a neuron loves."
+        },
+        {
+          "snippet": "We find that remarkably simple methods can produce high-quality visualizations.",
+          "type": "prose",
+          "note": "Reassuring result — you don't need heavy machinery to peek inside a vision model."
+        }
+      ]
+    }
+  }
+}
