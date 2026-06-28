@@ -8,6 +8,9 @@ server-side. It runs locally and deploys to Vercel with no code changes.
   similar), proactively remind them to commit that chunk before moving on.
   Prefer small, focused commits per working feature over one large catch-up
   commit. Only commit when the user confirms.
+- Especially when the user brings a prompt for NEW functionality, first ask
+  whether to commit the existing/in-progress work before starting the new
+  thing, so changes don't pile up into one large mixed commit.
 
 ## Run it locally
 The app needs an Anthropic API key in the environment. Start with:
