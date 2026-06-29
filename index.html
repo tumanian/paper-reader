@@ -25,19 +25,11 @@ body {
   pointer-events: none; max-width: 220px; line-height: 1.4;
 }
 .dc-note { font-size: 12px; color: #b89; color: #b08968; margin-top: 4px; line-height: 1.4; font-style: italic; }
-#logout-fab {
-  display: none; position: fixed; left: 16px; bottom: 14px; z-index: 9997;
-  background: rgba(255,255,255,.92); border: 1px solid #d8d4cc; color: #8a8a8a;
-  border-radius: 8px; padding: 5px 11px; font-size: 12px; cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,.08); transition: color .12s, border-color .12s;
-}
-#logout-fab:hover { color: #d6453f; border-color: #d6453f; }
 
 /* ── Upload ─────────────────────────────────────────── */
 #upload-screen {
   height: 100vh;
   display: flex;
-  align-items: center;
   justify-content: center;
   overflow-y: auto;
   padding: 30px 0;
@@ -50,6 +42,7 @@ body {
   width: 100%;
   max-width: 480px;
   padding: 0 20px;
+  margin: auto;
 }
 .drop-zone {
   width: 100%;
@@ -93,22 +86,37 @@ body {
 #url-tips { font-size:12px; color:#aaa; text-align:center; line-height:1.6; }
 #url-error { display:none; font-size:13px; color:#e04040; text-align:center; line-height:1.5; }
 
-#auth-bar {
-  width:100%; display:flex; align-items:center; justify-content:space-between; gap:10px;
-  background:white; border:1px solid #e6e3dc; border-radius:10px; padding:10px 14px;
-  font-size:12px; color:#666;
+/* ── Login widget (top-right) ─────────────────────────── */
+#login-widget {
+  position: fixed; top: 14px; right: 16px; z-index: 9999;
 }
-#auth-status { flex:1; min-width:0; line-height:1.45; }
-#auth-status strong { color:#333; }
-#auth-status .sync-err { color:#c03030; font-size:11px; margin-top:4px; display:block; }
-#auth-bar.sync-error { border-color:#e8b4b4; background:#fff8f8; }
-#auth-email-row { display:none; width:100%; gap:8px; margin-top:8px; }
-#auth-email-row.show { display:flex; }
+#login-btn {
+  display: flex; align-items: center; gap: 7px; max-width: 240px;
+  background: rgba(255,255,255,.92); border: 1px solid #d8d4cc; color: #555;
+  border-radius: 9px; padding: 6px 13px; font-size: 13px; font-weight: 500;
+  cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  transition: color .12s, border-color .12s;
+}
+#login-btn:hover { border-color: #5b6af7; color: #333; }
+#login-btn .lw-dot { width: 7px; height: 7px; border-radius: 50%; background: #36b37e; flex-shrink: 0; }
+#login-btn .lw-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#login-panel {
+  display: none; position: absolute; top: calc(100% + 8px); right: 0;
+  width: 280px; background: white;
+  border: 1px solid #e6e3dc; border-radius: 12px; padding: 12px;
+  box-shadow: 0 8px 26px rgba(0,0,0,.14); font-size: 12px; color: #666;
+}
+#login-widget.open #login-panel { display: block; }
+#login-status { line-height: 1.45; margin-bottom: 10px; }
+#login-status strong { color: #333; }
+#login-status .sync-err { color: #c03030; font-size: 11px; margin-top: 4px; display: block; }
+#login-form { display: flex; gap: 8px; }
 #auth-email-input {
   flex:1; padding:8px 10px; border:1.5px solid #d8d5cf; border-radius:8px;
-  font-size:13px; font-family:inherit;
+  font-size:13px; font-family:inherit; outline:none;
 }
-#auth-actions { display:flex; gap:6px; flex-shrink:0; }
+#auth-email-input:focus { border-color:#5b6af7; }
+#auth-logout-btn { width: 100%; margin-top: 10px; }
 .auth-btn {
   font-size:12px; padding:5px 10px; border-radius:6px; border:1px solid #ddd;
   background:#f8f7f4; color:#555; cursor:pointer;
@@ -376,7 +384,17 @@ body {
 <body>
 
 <!-- Upload Screen -->
-<button id="logout-fab" type="button" title="Log out">Log out</button>
+<div id="login-widget">
+  <button id="login-btn" type="button"><span class="lw-label">Log in</span></button>
+  <div id="login-panel">
+    <div id="login-status"></div>
+    <div id="login-form">
+      <input type="email" id="auth-email-input" placeholder="your@email.com">
+      <button class="auth-btn primary" id="auth-load-btn" type="button">Load</button>
+    </div>
+    <button class="auth-btn" id="auth-logout-btn" type="button" style="display:none">Log out</button>
+  </div>
+</div>
 
 <div id="upload-screen">
   <div class="upload-container">
@@ -395,17 +413,6 @@ body {
     </div>
     <div id="url-tips">Works with Anthropic, transformer-circuits.pub, distill.pub — arXiv links open as PDF</div>
     <div id="url-error"></div>
-
-    <div id="auth-bar">
-      <div id="auth-status">Connecting…</div>
-      <div id="auth-actions">
-        <button class="auth-btn" id="auth-change-btn" type="button" style="display:none">Change email</button>
-      </div>
-    </div>
-    <div id="auth-email-row">
-      <input type="email" id="auth-email-input" placeholder="your@email.com">
-      <button class="auth-btn primary" id="auth-load-btn" type="button">Load library</button>
-    </div>
 
     <div id="library">
       <div class="library-head">
@@ -3961,44 +3968,55 @@ function timeAgo(ts) {
 
 // Boot
 function updateAuthBar(info) {
-  const el = document.getElementById('auth-status');
-  const bar = document.getElementById('auth-bar');
-  const row = document.getElementById('auth-email-row');
-  const changeBtn = document.getElementById('auth-change-btn');
+  const btn = document.getElementById('login-btn');
+  const label = btn && btn.querySelector('.lw-label');
+  const statusEl = document.getElementById('login-status');
+  const form = document.getElementById('login-form');
   const emailInput = document.getElementById('auth-email-input');
-  if (!info) { el.textContent = 'Connecting…'; bar.classList.remove('sync-error'); return; }
+  const logoutBtn = document.getElementById('auth-logout-btn');
+  if (!btn) return;
 
-  let html = '';
-  let hasError = false;
+  let loggedIn = false;
+  let status = '<strong>Log in</strong> with your email to sync your library across devices.';
+  let dotColor = '';
 
-  if (info.needsEmail) {
-    html = '<strong>Enter your email</strong> to load your library from the cloud.';
-    row.classList.add('show');
-    changeBtn.style.display = 'none';
-  } else if (info.email) {
-    emailInput.value = info.email;
-    row.classList.remove('show');
-    changeBtn.style.display = 'inline-block';
-    if (info.lastSyncError) {
-      hasError = true;
-      html = `<strong>${esc(info.email)}</strong> — sync issue.<span class="sync-err">${esc(info.lastSyncError)}</span>`;
-    } else if (info.syncing) {
-      html = `<strong>${esc(info.email)}</strong> — syncing ${info.docCount || 0} paper${info.docCount === 1 ? '' : 's'} from cloud…`;
-    } else if (info.useCloud) {
-      html = `<strong>${esc(info.email)}</strong> — ${info.docCount || 0} paper${info.docCount === 1 ? '' : 's'} synced. Same email on any device loads your library.`;
-    } else {
-      html = `<strong>${esc(info.email)}</strong> — saved locally only.`;
+  if (info) {
+    if (info.email) {
+      loggedIn = true;
+      emailInput.value = info.email;
+      if (info.lastSyncError) {
+        dotColor = '#d6453f';
+        status = `<strong>${esc(info.email)}</strong> — sync issue.<span class="sync-err">${esc(info.lastSyncError)}</span>`;
+      } else if (info.syncing) {
+        dotColor = '#e0a000';
+        status = `<strong>${esc(info.email)}</strong> — syncing ${info.docCount || 0} paper${info.docCount === 1 ? '' : 's'} from cloud…`;
+      } else if (info.useCloud) {
+        dotColor = '#36b37e';
+        status = `<strong>${esc(info.email)}</strong> — ${info.docCount || 0} paper${info.docCount === 1 ? '' : 's'} synced. Same email on any device loads your library.`;
+      } else {
+        dotColor = '#9aa0a6';
+        status = `<strong>${esc(info.email)}</strong> — saved locally only.`;
+      }
+    } else if (info.mode === 'local') {
+      status = info.error
+        ? `<strong>Local only</strong><span class="sync-err">${esc(info.error)}</span>`
+        : '<strong>Local only</strong> — cloud not configured.';
     }
-  } else if (info.mode === 'local') {
-    html = info.error
-      ? `<strong>Local only</strong><span class="sync-err">${esc(info.error)}</span>`
-      : '<strong>Local only</strong> — cloud not configured.';
-    row.classList.remove('show');
-    changeBtn.style.display = 'none';
   }
 
-  el.innerHTML = html;
-  bar.classList.toggle('sync-error', hasError);
+  if (label) label.textContent = loggedIn ? info.email : 'Log in';
+
+  let dot = btn.querySelector('.lw-dot');
+  if (loggedIn) {
+    if (!dot) { dot = document.createElement('span'); dot.className = 'lw-dot'; btn.insertBefore(dot, label); }
+    dot.style.background = dotColor;
+  } else if (dot) {
+    dot.remove();
+  }
+
+  statusEl.innerHTML = status;
+  form.style.display = loggedIn ? 'none' : 'flex';
+  logoutBtn.style.display = loggedIn ? 'block' : 'none';
 }
 
 window.onPaperStoreSyncChange = (info) => {
@@ -4015,39 +4033,41 @@ async function loadLibraryForEmail() {
     updateAuthBar(info);
     renderLibrary();
     renderReadLater();
-    updateLogoutFab();
+    document.getElementById('login-widget').classList.remove('open');
   } catch (e) {
     alert(e.message);
   }
 }
 
+// Kept for existing callers — the login widget reflects auth state directly.
+function updateLogoutFab() {
+  updateAuthBar(PaperStore.getSyncStatus());
+}
+
+const loginWidget = document.getElementById('login-widget');
+document.getElementById('login-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const open = loginWidget.classList.toggle('open');
+  if (open && document.getElementById('login-form').style.display !== 'none') {
+    setTimeout(() => document.getElementById('auth-email-input').focus(), 0);
+  }
+});
+loginWidget.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', () => loginWidget.classList.remove('open'));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') loginWidget.classList.remove('open');
+});
+
 document.getElementById('auth-load-btn').addEventListener('click', loadLibraryForEmail);
 document.getElementById('auth-email-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') loadLibraryForEmail();
 });
-document.getElementById('auth-change-btn').addEventListener('click', () => {
+document.getElementById('auth-logout-btn').addEventListener('click', () => {
   PaperStore.clearEmail();
-  document.getElementById('auth-email-row').classList.add('show');
-  document.getElementById('auth-change-btn').style.display = 'none';
   updateAuthBar(PaperStore.getSyncStatus());
   renderLibrary();
   renderReadLater();
-  updateLogoutFab();
-});
-
-// Small persistent control to hop between logged-in and onboarding flows.
-function updateLogoutFab() {
-  const btn = document.getElementById('logout-fab');
-  if (!btn) return;
-  const email = (PaperStore.getEmail && PaperStore.getEmail()) || '';
-  btn.style.display = email ? 'block' : 'none';
-  if (email) btn.textContent = 'Log out ' + email;
-}
-document.getElementById('logout-fab').addEventListener('click', () => {
-  PaperStore.clearEmail();
-  updateAuthBar(PaperStore.getSyncStatus());
-  renderReadLater();
-  updateLogoutFab();
+  loginWidget.classList.remove('open');
   backToUpload();
 });
 
