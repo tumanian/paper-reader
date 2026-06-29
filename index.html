@@ -16,43 +16,8 @@ body {
 }
 
 /* ── Onboarding ─────────────────────────────────────── */
-#onboarding-screen {
-  display: none;
-  position: fixed; inset: 0; z-index: 50;
-  background: radial-gradient(1200px 600px at 50% -10%, #fbf7ef 0%, #eceae4 60%);
-  overflow-y: auto;
-}
-#onboarding-screen.show { display: flex; align-items: flex-start; justify-content: center; }
-.ob-container { width: 100%; max-width: 720px; padding: 64px 24px 80px; }
-.ob-eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #8a86c0; text-align: center; }
-.ob-title { font-size: 30px; font-weight: 750; color: #1c1c1c; text-align: center; margin: 8px 0 8px; line-height: 1.2; }
-.ob-sub { font-size: 15px; color: #6a6a6a; text-align: center; max-width: 520px; margin: 0 auto 32px; line-height: 1.5; }
-.ob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.ob-card {
-  background: white; border: 1px solid #e2ded5; border-radius: 14px; padding: 20px 20px 18px;
-  cursor: pointer; text-align: left; transition: transform .12s, border-color .12s, box-shadow .12s;
-}
-.ob-card:hover { transform: translateY(-2px); border-color: #5b6af7; box-shadow: 0 8px 22px rgba(91,106,247,.13); }
-.ob-card .ob-emoji { font-size: 26px; line-height: 1; margin-bottom: 10px; }
-.ob-card .ob-card-title { font-size: 16px; font-weight: 650; color: #1c1c1c; margin-bottom: 4px; }
-.ob-card .ob-card-blurb { font-size: 13px; color: #777; line-height: 1.45; }
-.ob-card.ob-surprise { background: linear-gradient(135deg,#5b6af7,#8a52e0); border: none; }
-.ob-card.ob-surprise .ob-card-title, .ob-card.ob-surprise .ob-card-blurb { color: white; }
-.ob-card.ob-surprise .ob-card-blurb { color: rgba(255,255,255,.85); }
-.ob-back { background: none; border: none; color: #7a7a7a; font-size: 13px; cursor: pointer; padding: 4px 0; margin-bottom: 16px; }
-.ob-back:hover { color: #5b6af7; }
-.ob-paper-card { display: flex; flex-direction: column; }
-.ob-paper-card .ob-card-hook { font-size: 13px; color: #777; line-height: 1.45; margin-top: 4px; }
-.ob-paper-card .ob-todo { font-size: 11px; color: #c08a3a; margin-top: 8px; font-style: italic; }
-.ob-footer { text-align: center; margin-top: 30px; }
-.ob-skip { background: none; border: none; color: #8a8a8a; font-size: 13px; cursor: pointer; text-decoration: underline; }
-.ob-skip:hover { color: #5b6af7; }
-#explore-example-btn {
-  background: white; border: 1px solid #d8d4cc; color: #5b6af7; border-radius: 10px;
-  padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; width: 100%;
-  transition: border-color .12s, background .12s;
-}
-#explore-example-btn:hover { border-color: #5b6af7; background: #f8f8ff; }
+.lib-card.lib-featured { border-color: #cdd2ff; background: #fbfbff; }
+.lib-spark { margin-left: 5px; font-size: 13px; cursor: help; }
 .hl-rect[data-onboarding="1"] { box-shadow: 0 0 0 1px rgba(91,106,247,.35) inset; }
 #ob-hint {
   position: fixed; z-index: 9998; background: #1a1a1a; color: #eee; font-size: 13px;
@@ -411,25 +376,10 @@ body {
 <body>
 
 <!-- Upload Screen -->
-<div id="onboarding-screen">
-  <div class="ob-container">
-    <div class="ob-eyebrow">Paper Reader</div>
-    <div class="ob-title" id="ob-title">What do you want to explore?</div>
-    <div class="ob-sub" id="ob-sub">Pick a paper — we've highlighted the interesting bits. Tap any highlight to dig in with Claude.</div>
-    <div class="ob-grid" id="ob-grid"></div>
-    <div class="ob-footer">
-      <button class="ob-skip" id="ob-skip">I'll open my own paper →</button>
-    </div>
-  </div>
-</div>
-
-<button id="logout-fab" type="button" title="Log out and return to the onboarding flow">Log out</button>
+<button id="logout-fab" type="button" title="Log out">Log out</button>
 
 <div id="upload-screen">
   <div class="upload-container">
-    <div id="explore-example-row" style="width:100%">
-      <button id="explore-example-btn" type="button">✨ Explore an example</button>
-    </div>
     <div class="drop-zone" id="drop-zone">
       <div class="dz-icon">📄</div>
       <h2>Open a research paper</h2>
@@ -863,18 +813,42 @@ function renderLibrary() {
   const lib = document.getElementById('library');
   const cards = document.getElementById('lib-cards');
 
-  if (!docs.length) { lib.classList.remove('show'); return; }
+  // Featured example is an invitation for logged-out visitors only. Once they
+  // open it, it's saved as a doc — so dedupe by URL and just sparkle that card
+  // instead of showing a separate invitation.
+  const loggedIn = !!(PaperStore.getEmail && PaperStore.getEmail());
+  const featured = loggedIn ? null : getFeaturedPaper();
+  const normUrl = (u) => (u || '').trim().replace(/\/+$/, '').toLowerCase();
+  const featUrl = featured ? normUrl(featured.url) : '';
+  const featuredSaved = !!(featUrl && docs.some(d => normUrl(d.url) === featUrl));
+
+  if (!docs.length && !featured) { lib.classList.remove('show'); return; }
   lib.classList.add('show');
   cards.innerHTML = '';
 
+  if (featured && !featuredSaved) {
+    const card = document.createElement('div');
+    card.className = 'lib-card lib-featured';
+    card.innerHTML = `
+      <div class="lib-icon">🌐</div>
+      <div class="lib-info">
+        <div class="lib-name">${esc(featured.title)}<span class="lib-spark" title="Annotated example">✨</span></div>
+        ${featured.hook ? `<div class="lib-summary">${esc(featured.hook)}</div>` : ''}
+        <div class="lib-meta">Annotated example · citations, math, to-code &amp; discussion</div>
+      </div>`;
+    card.addEventListener('click', () => openFeaturedExample());
+    cards.appendChild(card);
+  }
+
   for (const doc of docs) {
     const n = doc.discussions.length;
+    const isFeatured = !!(featUrl && normUrl(doc.url) === featUrl);
     const card = document.createElement('div');
-    card.className = 'lib-card';
+    card.className = 'lib-card' + (isFeatured ? ' lib-featured' : '');
     card.innerHTML = `
       <div class="lib-icon">${doc.mode === 'pdf' ? '📄' : '🌐'}</div>
       <div class="lib-info">
-        <div class="lib-name">${esc(doc.name)}</div>
+        <div class="lib-name">${esc(doc.name)}${isFeatured ? '<span class="lib-spark" title="Annotated example">✨</span>' : ''}</div>
         ${doc.conversationSummary ? `<div class="lib-summary">${esc(doc.conversationSummary)}</div>` : ''}
         <div class="lib-meta">${n} discussion${n!==1?'s':''} · ${timeAgo(doc.updated)}</div>
       </div>
@@ -1456,6 +1430,10 @@ function renderWebArticle(title, html, url) {
   document.getElementById('article-heading').textContent = title || 'Untitled';
   document.getElementById('article-source-url').innerHTML =
     `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`;
+  // Drop any highlight rects left over from a previously-opened paper — the
+  // layer is shared across web docs, so stale rects would otherwise bleed in.
+  const hlLayer = document.querySelector('#article-wrapper > .highlights-layer');
+  if (hlLayer) hlLayer.innerHTML = '';
   document.getElementById('article-body').innerHTML = html;
   document.getElementById('paper-name').textContent = title || url;
   document.querySelectorAll('#article-body script').forEach(s => s.remove());
@@ -1662,7 +1640,7 @@ function restoreWebHighlights() {
 //  APP LIFECYCLE
 // ═══════════════════════════════════════════════════════
 function startApp(name, badge) {
-  document.getElementById('onboarding-screen').classList.remove('show');
+  cancelOnboardingPlacement();
   document.getElementById('upload-screen').style.display = 'none';
   document.getElementById('main-app').style.display = 'flex';
   document.getElementById('content-loading').style.display = 'flex';
@@ -3928,6 +3906,7 @@ document.getElementById('new-btn').addEventListener('click', async () => {
   backToUpload();
 });
 function backToUpload() {
+  cancelOnboardingPlacement();
   persistCurrentDoc();
   clearTimeout(_summaryTimer);
   pdfDoc=null; discussions=[]; activeId=null; pendingSel=null;
@@ -3944,9 +3923,6 @@ function backToUpload() {
   document.getElementById('main-app').style.display='none';
   document.getElementById('url-input').value='';
   fileInput.value='';
-  // Not logged in → home is the onboarding/explore flow, not the library.
-  const loggedIn = !!(PaperStore.getEmail && PaperStore.getEmail());
-  if (!loggedIn) { showOnboarding(); return; }
   document.getElementById('upload-screen').style.display='flex';
   showList();
   renderLibrary();
@@ -4070,10 +4046,9 @@ function updateLogoutFab() {
 document.getElementById('logout-fab').addEventListener('click', () => {
   PaperStore.clearEmail();
   updateAuthBar(PaperStore.getSyncStatus());
-  renderLibrary();
   renderReadLater();
   updateLogoutFab();
-  showOnboarding();
+  backToUpload();
 });
 
 window.onPaperStoreAuthChange = () => {
@@ -4095,16 +4070,23 @@ document.addEventListener('visibilitychange', () => {
 //  ONBOARDING  (first-time guided tour — paints from static curation)
 // ═══════════════════════════════════════════════════════
 let onboardingData = null;
+// Tear-down handle for an in-flight onboarding highlight placement (its
+// MutationObserver + safety timer). Called when a new paper starts loading so
+// a stale observer can't fire against the next paper's DOM.
+let _onboardingCancel = null;
+function cancelOnboardingPlacement() {
+  if (_onboardingCancel) { try { _onboardingCancel(); } catch (_) {} _onboardingCancel = null; }
+}
 let pendingOnboarding = null;
-const OB_EMOJI = { interp: '🔍', classic: '📐', fun: '🔬' };
 
 function isTodoValue(s) { return !s || /^\s*TODO/i.test(String(s)); }
 function normalizeForMatch(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
 
 // Defensive parse: tolerate malformed entries without losing the rest.
 function sanitizeOnboarding(json) {
-  const out = { tracks: [], papers: {} };
+  const out = { tracks: [], papers: {}, featured: '' };
   if (!json || typeof json !== 'object') return out;
+  if (typeof json.featured === 'string') out.featured = json.featured;
   if (json.papers && typeof json.papers === 'object') {
     for (const [k, v] of Object.entries(json.papers)) {
       if (!v || typeof v !== 'object') continue;
@@ -4119,7 +4101,7 @@ function sanitizeOnboarding(json) {
                    cite: typeof it.cite === 'string' ? it.cite : null,
                  }))
         : [];
-      out.papers[k] = { paperId: k, title: v.title || k, url: v.url || '', hook: v.hook || '', items };
+      out.papers[k] = { paperId: k, title: v.title || k, url: v.url || '', hook: v.hook || '', startLabel: typeof v.startLabel === 'string' ? v.startLabel : '', items };
     }
   }
   if (Array.isArray(json.tracks)) {
@@ -4144,76 +4126,23 @@ async function loadOnboardingData() {
   return onboardingData;
 }
 
-async function showOnboarding() {
-  const data = await loadOnboardingData();
-  document.getElementById('upload-screen').style.display = 'none';
-  document.getElementById('main-app').style.display = 'none';
-  document.getElementById('onboarding-screen').classList.add('show');
-  renderOnboardingTracks(data);
-}
-function hideOnboarding() {
-  document.getElementById('onboarding-screen').classList.remove('show');
-  document.getElementById('upload-screen').style.display = 'flex';
-}
-
-function renderOnboardingTracks(data) {
-  document.getElementById('ob-title').textContent = 'What do you want to explore?';
-  document.getElementById('ob-sub').textContent =
-    "Pick a paper — we've highlighted the interesting bits. Tap any highlight to dig in with Claude.";
-  const grid = document.getElementById('ob-grid');
-  grid.innerHTML = '';
-  data.tracks.forEach((t) => {
-    const card = document.createElement('div');
-    card.className = 'ob-card';
-    card.innerHTML =
-      `<div class="ob-emoji">${OB_EMOJI[t.id] || '📄'}</div>` +
-      `<div class="ob-card-title">${esc(t.label)}</div>` +
-      `<div class="ob-card-blurb">${esc(t.blurb || '')}</div>`;
-    card.addEventListener('click', () => renderOnboardingPapers(data, t));
-    grid.appendChild(card);
-  });
-  const surprise = document.createElement('div');
-  surprise.className = 'ob-card ob-surprise';
-  surprise.innerHTML =
-    `<div class="ob-emoji">🎲</div>` +
-    `<div class="ob-card-title">Surprise me</div>` +
-    `<div class="ob-card-blurb">Pick a paper at random.</div>`;
-  surprise.addEventListener('click', () => surpriseMe(data));
-  grid.appendChild(surprise);
+// The featured annotated paper, surfaced as a sparkled card in the library
+// for everyone. Reads the cached curation (preloaded at boot); returns null
+// until loaded.
+function getFeaturedPaper() {
+  const data = onboardingData;
+  if (!data || !data.papers) return null;
+  return data.papers[data.featured]
+    || data.papers['attention-is-all-you-need']
+    || Object.values(data.papers)[0]
+    || null;
 }
 
-function renderOnboardingPapers(data, track) {
-  document.getElementById('ob-title').textContent = track.label;
-  document.getElementById('ob-sub').textContent = track.blurb || 'Pick a paper to dive in.';
-  const grid = document.getElementById('ob-grid');
-  grid.innerHTML = '';
-  const back = document.createElement('button');
-  back.className = 'ob-back';
-  back.textContent = '← all tracks';
-  back.style.gridColumn = '1 / -1';
-  back.addEventListener('click', () => renderOnboardingTracks(data));
-  grid.appendChild(back);
-  track.paperIds.forEach((pid) => {
-    const p = data.papers[pid];
-    if (!p) return;
-    const todo = isTodoValue(p.url);
-    const card = document.createElement('div');
-    card.className = 'ob-card ob-paper-card';
-    card.innerHTML =
-      `<div class="ob-card-title">${esc(p.title)}</div>` +
-      `<div class="ob-card-hook">${esc(p.hook || '')}</div>` +
-      (todo ? `<div class="ob-todo">URL not set yet (TODO)</div>` : '');
-    card.addEventListener('click', () => openOnboardingPaper(p));
-    grid.appendChild(card);
-  });
-}
-
-function surpriseMe(data) {
-  const keys = Object.keys(data.papers);
-  const usable = keys.filter((k) => !isTodoValue(data.papers[k].url));
-  const pool = usable.length ? usable : keys;
-  if (!pool.length) return;
-  openOnboardingPaper(data.papers[pool[Math.floor(Math.random() * pool.length)]]);
+// Open the featured annotated example. Its pre-placed annotations are applied
+// via maybeApplyOnboardingCuration once the page renders.
+async function openFeaturedExample() {
+  await loadOnboardingData();
+  await openOnboardingPaper(getFeaturedPaper());
 }
 
 async function openOnboardingPaper(paper) {
@@ -4222,7 +4151,6 @@ async function openOnboardingPaper(paper) {
     return;
   }
   pendingOnboarding = paper;
-  hideOnboarding();
   await loadWebPage(paper.url);
 }
 
@@ -4303,6 +4231,7 @@ function maybeApplyOnboardingCuration() {
 // mutation (debounced) until everything places or a 20s safety deadline hits.
 // Unmatched snippets are skipped silently — partial success is fine.
 function applyOnboardingItems(items) {
+  cancelOnboardingPlacement();
   const startedAt = Date.now();
   let remaining = items.slice();
   let observer = null, debounce = null, finished = false;
@@ -4343,8 +4272,10 @@ function applyOnboardingItems(items) {
     finished = true;
     if (observer) observer.disconnect();
     if (debounce) clearTimeout(debounce);
+    if (_onboardingCancel === finish) _onboardingCancel = null;
     if (remaining.length) console.info('[Onboarding]', remaining.length, 'snippet(s) never matched the rendered page.');
   }
+  _onboardingCancel = finish;
 
   attempt();
   if (finished) return;
@@ -4383,22 +4314,18 @@ function maybeShowOnboardingHint() {
   setTimeout(dismiss, 9000);
 }
 
-document.getElementById('explore-example-btn').addEventListener('click', showOnboarding);
-document.getElementById('ob-skip').addEventListener('click', hideOnboarding);
 
 (async function boot() {
   initStorage();
   const info = await PaperStore.init();
   updateAuthBar(info);
+  await loadOnboardingData();
   renderLibrary();
   renderReadLater();
   renderList();
-  // Logged in (email stored) → regular library flow. Not logged in → always
-  // land on the guided onboarding/explore flow, regardless of any locally saved
-  // papers. Comments the user adds still persist locally and reappear on reopen.
-  const loggedIn = !!(PaperStore.getEmail && PaperStore.getEmail());
+  // Everyone — logged in or not — lands on the upload/library page. The
+  // annotated Transformer example is available to all via the explore button.
   updateLogoutFab();
-  if (!loggedIn) showOnboarding();
 })();
 </script>
 </body>

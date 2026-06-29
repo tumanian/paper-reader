@@ -1,25 +1,6 @@
 {
-  "_comment": "Static onboarding curation, keyed by paper. Authored once — NOT generated per visit. Snippets are VERBATIM substrings of the rendered article so the in-page locator can place highlights. URLs are web-rendered (distill.pub / ar5iv.org) where DOM locating is reliable; arXiv /abs/ links render as PDF and won't auto-place. Each item may set \"feature\": discuss|citation|math|code — clicking the highlight auto-runs that feature. math/code items carry a \"tex\" string (used directly, no MathML extraction); citation items carry a \"cite\" marker (e.g. \"[13]\") that drives the matcher while \"snippet\" just anchors the highlight. To add a paper: add it under \"papers\" and reference its id from a track.",
-  "tracks": [
-    {
-      "id": "interp",
-      "label": "Interpretability / how AI works",
-      "blurb": "Peek inside the model.",
-      "paperIds": ["zoom-in-circuits"]
-    },
-    {
-      "id": "classic",
-      "label": "Classic ML / foundational papers",
-      "blurb": "The ideas everything else is built on.",
-      "paperIds": ["attention-is-all-you-need"]
-    },
-    {
-      "id": "fun",
-      "label": "Fun science",
-      "blurb": "Delightfully unexpected results.",
-      "paperIds": ["most-research-false", "feature-visualization"]
-    }
-  ],
+  "_comment": "Static onboarding curation, keyed by paper. Authored once — NOT generated per visit. A brand-new visitor is shown a single, minimal landing that opens the \"featured\" paper (its pre-placed annotations demo every feature). Snippets are VERBATIM substrings of the rendered article so the in-page locator can place highlights. URLs are web-rendered (distill.pub / ar5iv.org) where DOM locating is reliable; arXiv /abs/ links render as PDF and won't auto-place. Each item may set \"feature\": discuss|citation|math|code — clicking the highlight auto-runs that feature. math/code items carry a \"tex\" string (used directly, no MathML extraction); citation items carry a \"cite\" marker (e.g. \"[13]\") that drives the matcher while \"snippet\" just anchors the highlight. \"featured\" selects which paper the landing opens; \"startLabel\" sets the landing button text. Extra papers can stay here for later reuse even if not currently featured.",
+  "featured": "attention-is-all-you-need",
   "papers": {
     "zoom-in-circuits": {
       "paperId": "zoom-in-circuits",
@@ -48,6 +29,7 @@
       "paperId": "attention-is-all-you-need",
       "title": "Attention Is All You Need",
       "url": "https://ar5iv.org/abs/1706.03762",
+      "startLabel": "Open the annotated Transformer",
       "hook": "The 2017 paper that introduced the Transformer and reshaped modern AI.",
       "items": [
         {
