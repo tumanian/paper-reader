@@ -351,6 +351,7 @@ body {
 .dc-quote { font-size:12px; color:#888; font-style:italic; line-height:1.5; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; border-left:2px solid #333; padding-left:8px; margin-bottom:6px; }
 .dc-preview { font-size:12px; color:#666; display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
 .dc-unanswered { font-size:11px; color:#7a6a20; background:#332d12; border-radius:4px; padding:1px 6px; display:inline-block; }
+.dc-cta { font-size:11px; font-weight:600; color:#aeb6ff; background:#23264a; border:1px solid #3a3f6e; border-radius:5px; padding:2px 7px; display:inline-block; }
 
 /* ── Chat ────────────────────────────────────────────── */
 #chat-panel { flex:1; display:none; flex-direction:column; overflow:hidden; }
@@ -731,6 +732,7 @@ async function persistCurrentDoc() {
       citationMeta: d.citationMeta || null,
       mathKind: d.mathKind || null, mathTex: d.mathTex || null,
       note: d.note || null, onboarding: d.onboarding || false,
+      feature: d.feature || null, tex: d.tex || null, cite: d.cite || null,
     })),
   };
   try {
@@ -3260,6 +3262,54 @@ function startMathDiscussion(kind) {
 }
 document.getElementById('explain-math-btn').addEventListener('click', () => startMathDiscussion('explain'));
 document.getElementById('to-code-btn').addEventListener('click', () => startMathDiscussion('code'));
+
+// Onboarding demo highlights auto-run the feature they advertise on first click,
+// so a first-time visitor sees citations / explain-math / to-code in action
+// without having to discover the gesture. After the demo has run once (math/code
+// leave a chat behind) clicks fall through to the normal discussion.
+const FEATURE_CTA = { math: '✨ Explain math', code: '{ } To code', citation: '📚 Show citation' };
+function runOnboardingDemo(d) {
+  if (!d || !d.feature || d.feature === 'discuss') return false;
+  if (d.messages && d.messages.length) return false;
+  if (d.feature === 'citation') { showOnboardingCitationDemo(d); return true; }
+  if (d.feature === 'math' || d.feature === 'code') {
+    d.mathKind = d.feature === 'code' ? 'code' : 'explain';
+    d.mathTex = d.tex || d.mathTex || null;
+    openChat(d.id);
+    const input = document.getElementById('msg-input');
+    input.value = d.feature === 'code' ? 'Translate this formula to code.' : 'Explain this math.';
+    sendMessage();
+    return true;
+  }
+  return false;
+}
+
+// Replay the real citation flow: re-locate the snippet, synthesize the same
+// pendingSel a live selection would produce, then show the preview popover.
+function showOnboardingCitationDemo(d) {
+  const aw = document.getElementById('article-wrapper');
+  const body = document.getElementById('article-body');
+  const range = (aw && body) ? locateTextRange(body, d.txt) : null;
+  if (!range) { openChat(d.id); return; }
+  const anchor = range.startContainer.nodeType === 3 ? range.startContainer.parentElement : range.startContainer;
+  anchor?.scrollIntoView({ block: 'center' });
+  const rects = Array.from(range.getClientRects()).filter(r => r.width > 1);
+  if (!rects.length) { openChat(d.id); return; }
+  const ar = aw.getBoundingClientRect();
+  // d.cite (e.g. "[13]") drives the matcher directly; passing range:null skips
+  // expandSelectionText so the marker isn't clobbered by the prose anchor text.
+  const txt = d.cite || range.toString();
+  pendingSel = {
+    txt, range: d.cite ? null : range.cloneRange(), mode: 'web', pageNum: null, wrapper: aw,
+    relRects: rects.map(r => ({ left: r.left - ar.left, top: r.top - ar.top, width: r.width, height: r.height })),
+    mathTex: null, math: null,
+  };
+  pendingCitation = parseCitation(txt) || parseParentheticalAuthorYear(txt);
+  document.getElementById('explain-math-btn').style.display = 'none';
+  document.getElementById('to-code-btn').style.display = 'none';
+  positionPopover(rects[rects.length - 1]);
+  loadCitationPreview();
+}
 document.getElementById('cite-open-btn').addEventListener('click', () => { openCitationPaper(); });
 document.getElementById('read-later-sel-btn').addEventListener('click', () => { addSelectionToReadLater(); });
 document.getElementById('read-later-paper-btn').addEventListener('click', async () => {
@@ -3291,10 +3341,12 @@ function paintHighlight(d) {
   for (const r of d.relRects) {
     const div = document.createElement('div');
     div.className = 'hl-rect';
+    div.dataset.discId = d.id;
     if (d.onboarding) div.dataset.onboarding = '1';
-    if (d.note) div.title = d.note;
+    const cta = d.feature && FEATURE_CTA[d.feature] ? FEATURE_CTA[d.feature] + ' — click to try' : '';
+    if (cta || d.note) div.title = [cta, d.note].filter(Boolean).join('  ·  ');
     Object.assign(div.style, { left:r.left+'px', top:r.top+'px', width:r.width+'px', height:r.height+'px', background:d.color.bg });
-    div.addEventListener('click', () => openChat(d.id));
+    div.addEventListener('click', () => { if (!runOnboardingDemo(d)) openChat(d.id); });
     layer.appendChild(div);
   }
 }
@@ -3326,10 +3378,12 @@ function renderList() {
       <div class="dc-quote">${esc(d.txt.slice(0,110))}${d.txt.length>110?'…':''}</div>
       ${ d.note ? `<div class="dc-note">💡 ${esc(d.note)}</div>` : '' }
       ${ last ? `<div class="dc-preview">${esc(last.content.slice(0,70))}…</div>`
-              : `<span class="dc-unanswered">${d.note ? 'Tap to discuss' : 'No question yet'}</span>` }`;
+              : (d.feature && FEATURE_CTA[d.feature]
+                  ? `<span class="dc-cta">${FEATURE_CTA[d.feature]} →</span>`
+                  : `<span class="dc-unanswered">${d.note ? 'Tap to discuss' : 'No question yet'}</span>`) }`;
     card.addEventListener('click', e => {
       if (e.target.classList.contains('dc-del')) return;
-      openChat(d.id);
+      if (!runOnboardingDemo(d)) openChat(d.id);
     });
     card.querySelector('.dc-del').addEventListener('click', e => {
       e.stopPropagation(); deleteDiscussion(d.id);
@@ -3365,8 +3419,18 @@ function openChat(id) {
   document.getElementById('chat-hl-text').textContent =
     `"${d.txt.slice(0,180)}${d.txt.length>180?'…':''}"`;
   rebuildChat(d);
+  scrollHighlightIntoView(d);
   const input = document.getElementById('msg-input');
   input.focus();
+}
+
+// Bring the reader to the highlight for a discussion (PDF page or web article).
+function scrollHighlightIntoView(d) {
+  if (!d) return;
+  const rect = document.querySelector(`.hl-rect[data-disc-id="${d.id}"]`);
+  if (rect && typeof rect.scrollIntoView === 'function') {
+    rect.scrollIntoView({ block: 'center' });
+  }
 }
 function showList() {
   activeId = null;
@@ -4046,7 +4110,14 @@ function sanitizeOnboarding(json) {
       if (!v || typeof v !== 'object') continue;
       const items = Array.isArray(v.items)
         ? v.items.filter((it) => it && typeof it.snippet === 'string')
-                 .map((it) => ({ snippet: it.snippet, type: it.type || 'prose', note: typeof it.note === 'string' ? it.note : '' }))
+                 .map((it) => ({
+                   snippet: it.snippet,
+                   type: it.type || 'prose',
+                   note: typeof it.note === 'string' ? it.note : '',
+                   feature: ['math', 'code', 'citation', 'discuss'].includes(it.feature) ? it.feature : 'discuss',
+                   tex: typeof it.tex === 'string' ? it.tex : null,
+                   cite: typeof it.cite === 'string' ? it.cite : null,
+                 }))
         : [];
       out.papers[k] = { paperId: k, title: v.title || k, url: v.url || '', hook: v.hook || '', items };
     }
@@ -4212,7 +4283,16 @@ function maybeApplyOnboardingCuration() {
   const paper = pendingOnboarding;
   pendingOnboarding = null;
   if (!paper || currentMode !== 'web' || !Array.isArray(paper.items)) return;
-  if (discussions.length > 0) return; // reopened — saved highlights already restored
+  if (discussions.length > 0) {
+    // Reopened. If the visitor never engaged (every highlight is an untouched
+    // onboarding demo), refresh from the latest curation so edits/new feature
+    // demos show up. If they have a real discussion going, leave it alone.
+    const refreshable = discussions.every(d => d.onboarding && (!d.messages || d.messages.length === 0));
+    if (!refreshable) return;
+    const layer = document.getElementById('article-wrapper')?.querySelector('.highlights-layer');
+    if (layer) layer.innerHTML = '';
+    discussions = [];
+  }
   applyOnboardingItems(paper.items.slice());
 }
 
@@ -4239,12 +4319,14 @@ function applyOnboardingItems(items) {
         const range = locateTextRange(body, item.snippet);
         const relRects = range ? rectsForRange(range, aw) : [];
         if (!relRects.length) { stillMissing.push(item); continue; }
+        const feature = ['math', 'code', 'citation', 'discuss'].includes(item.feature) ? item.feature : 'discuss';
         const d = {
           id: Date.now() + discussions.length + Math.floor(Math.random() * 1000),
           txt: normalizeForMatch(range.toString()),
           mode: 'web', pageNum: null, color: nextColor(), wrapper: aw,
           relRects, messages: [],
           note: item.note || null, onboarding: true,
+          feature, tex: item.tex || null, cite: item.cite || null,
         };
         discussions.push(d);
         paintHighlight(d);

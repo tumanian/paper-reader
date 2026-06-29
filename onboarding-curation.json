@@ -1,5 +1,5 @@
 {
-  "_comment": "Static onboarding curation, keyed by paper. Authored once — NOT generated per visit. Snippets are VERBATIM substrings of the rendered article so the in-page locator can place highlights. URLs are web-rendered (distill.pub / ar5iv.org) where DOM locating is reliable; arXiv /abs/ links render as PDF and won't auto-place. To add a paper: add it under \"papers\" and reference its id from a track.",
+  "_comment": "Static onboarding curation, keyed by paper. Authored once — NOT generated per visit. Snippets are VERBATIM substrings of the rendered article so the in-page locator can place highlights. URLs are web-rendered (distill.pub / ar5iv.org) where DOM locating is reliable; arXiv /abs/ links render as PDF and won't auto-place. Each item may set \"feature\": discuss|citation|math|code — clicking the highlight auto-runs that feature. math/code items carry a \"tex\" string (used directly, no MathML extraction); citation items carry a \"cite\" marker (e.g. \"[13]\") that drives the matcher while \"snippet\" just anchors the highlight. To add a paper: add it under \"papers\" and reference its id from a track.",
   "tracks": [
     {
       "id": "interp",
@@ -17,7 +17,7 @@
       "id": "fun",
       "label": "Fun science",
       "blurb": "Delightfully unexpected results.",
-      "paperIds": ["feature-visualization"]
+      "paperIds": ["most-research-false", "feature-visualization"]
     }
   ],
   "papers": {
@@ -53,12 +53,50 @@
         {
           "snippet": "We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.",
           "type": "prose",
-          "note": "The core bet: drop RNNs and convolutions entirely, lean on attention alone. Ask why that was so radical in 2017."
+          "feature": "discuss",
+          "note": "The core bet: drop RNNs and convolutions entirely, lean on attention alone. Click to ask Claude why that was radical in 2017."
         },
         {
-          "snippet": "The output is computed as a weighted sum of the values, where the weight assigned to each value is computed by a compatibility function of the query with the corresponding key.",
+          "snippet": "Recurrent neural networks, long short-term memory",
+          "type": "citation",
+          "feature": "citation",
+          "cite": "[13]",
+          "note": "There's a citation right here. Click to watch Claude pull up the cited paper and explain why it's relevant."
+        },
+        {
+          "snippet": "We compute the matrix of outputs as",
+          "type": "formula",
+          "feature": "math",
+          "tex": "\\text{Attention}(Q,K,V)=\\text{softmax}\\!\\left(\\frac{QK^{\\top}}{\\sqrt{d_k}}\\right)V",
+          "note": "Scaled dot-product attention. Click 'Explain math' to have Claude unpack it term by term."
+        },
+        {
+          "snippet": "In practice, we compute the attention function on a set of queries simultaneously",
+          "type": "formula",
+          "feature": "code",
+          "tex": "\\text{Attention}(Q,K,V)=\\text{softmax}\\!\\left(\\frac{QK^{\\top}}{\\sqrt{d_k}}\\right)V",
+          "note": "Same equation \u2014 click 'To code' to get a runnable PyTorch/NumPy version with tensor shapes."
+        }
+      ]
+    },
+    "most-research-false": {
+      "paperId": "most-research-false",
+      "title": "Why Most Published Research Findings Are False",
+      "url": "https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.0020124",
+      "hook": "A statistician's provocative argument that most published findings don't hold up.",
+      "items": [
+        {
+          "snippet": "It can be proven that most claimed research findings are false",
           "type": "prose",
-          "note": "Attention in plain English, stated before any math. Tip: select the Attention(Q,K,V) equation just below for the 'Explain math' / 'To code' tools."
+          "feature": "discuss",
+          "note": "The provocative thesis in one line. Click to discuss how Ioannidis actually argues it."
+        },
+        {
+          "snippet": "the post-study probability that it is true is the positive predictive value",
+          "type": "formula",
+          "feature": "math",
+          "tex": "\\text{PPV} = \\frac{(1-\\beta)R}{R - \\beta R + \\alpha}",
+          "note": "The formula behind the claim. Click 'Explain math' to see what power, bias, and prior odds each do."
         }
       ]
     },
