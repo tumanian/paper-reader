@@ -577,6 +577,7 @@ window.PaperStore = (function () {
       const tx = db.transaction('pdfs', 'readwrite');
       tx.objectStore('pdfs').delete(docId);
     }
+    await deleteFiguresForDoc(docId);
   }
 
   async function clearLibrary() {
@@ -656,6 +657,50 @@ window.PaperStore = (function () {
     return idbGetLocal(docId);
   }
 
+  // ── Captured figure images ───────────────────────────────────────────────
+  // Figure screenshots can be hundreds of KB, so they live in IndexedDB (the
+  // same local `pdfs` object store that holds PDF bytes) instead of the
+  // localStorage doc state, which would blow the ~5MB quota. They are keyed by
+  // `fig::<docId>::<discId>` so they sit alongside (and never collide with) the
+  // PDF blob keyed by plain docId. Local-only: the value is a small JSON record
+  // { dataUrl, mediaType, w, h }. Not mirrored to cloud storage — figure
+  // discussions restore from the device that captured them.
+  async function putFigure(key, record) {
+    const db = await openLocalIDB();
+    if (!db) return;
+    await new Promise((res) => {
+      const tx = db.transaction('pdfs', 'readwrite');
+      tx.objectStore('pdfs').put(record, key);
+      tx.oncomplete = () => res();
+      tx.onerror = () => res();
+    });
+  }
+
+  async function getFigure(key) {
+    return idbGetLocal(key);
+  }
+
+  // Remove every figure blob belonging to a document (called on doc delete so
+  // captured images don't leak after the doc is gone).
+  async function deleteFiguresForDoc(docId) {
+    const db = await openLocalIDB();
+    if (!db) return;
+    const prefix = `fig::${docId}::`;
+    await new Promise((res) => {
+      const tx = db.transaction('pdfs', 'readwrite');
+      const store = tx.objectStore('pdfs');
+      const req = store.getAllKeys ? store.getAllKeys() : null;
+      if (!req) { res(); return; }
+      req.onsuccess = () => {
+        for (const k of req.result || []) {
+          if (typeof k === 'string' && k.startsWith(prefix)) store.delete(k);
+        }
+      };
+      tx.oncomplete = () => res();
+      tx.onerror = () => res();
+    });
+  }
+
   return {
     init,
     ready,
@@ -677,6 +722,9 @@ window.PaperStore = (function () {
     getRatingsFromCloud,
     putPdf,
     getPdf,
+    putFigure,
+    getFigure,
+    deleteFiguresForDoc,
     syncAllToCloud,
     getClient: () => supabase,
   };

@@ -58,6 +58,12 @@
           "feature": "code",
           "tex": "\\text{Attention}(Q,K,V)=\\text{softmax}\\!\\left(\\frac{QK^{\\top}}{\\sqrt{d_k}}\\right)V",
           "note": "Same equation \u2014 click 'To code' to get a runnable PyTorch/NumPy version with tensor shapes."
+        },
+        {
+          "snippet": "Scaled Dot-Product Attention",
+          "type": "figure",
+          "feature": "figure",
+          "note": "Press \u2318\u21e7F and drag a box around any figure to have Claude explain it. Click here to arm the capture, then box the diagram."
         }
       ]
     },

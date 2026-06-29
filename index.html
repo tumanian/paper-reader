@@ -304,6 +304,53 @@ body {
 #read-later-sel-btn { background:#2a2838; color:#c4c0e8; }
 #read-later-sel-btn:hover { background:#353348; }
 
+/* ── Figure capture (one-shot rectangle screenshot) ──── */
+#figure-hint {
+  display:inline-flex; align-items:center; gap:5px; flex-shrink:0;
+  padding:4px 9px; border-radius:6px; font-size:12px; color:#888;
+  background:#f8f7f4; border:1px solid #e0ddd6; cursor:pointer;
+  user-select:none; white-space:nowrap;
+}
+#figure-hint:hover { color:#333; border-color:#bbb; }
+#figure-hint kbd {
+  font:inherit; font-size:11px; background:#efece6; color:#777;
+  border-radius:4px; padding:1px 5px; border:1px solid #ddd9d1;
+}
+
+#figure-capture-overlay {
+  position:fixed; inset:0; z-index:10050; cursor:crosshair;
+  background:rgba(10,12,18,.18); user-select:none;
+}
+.fig-capture-rect {
+  position:fixed; z-index:10051; border:1.5px dashed #8ea2ff;
+  background:rgba(120,150,255,.12);
+  box-shadow:0 0 0 9999px rgba(10,12,18,.28); pointer-events:none;
+}
+#figure-capture-banner {
+  position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:10052;
+  background:#1a1a1a; color:#e8e8e8; font-size:13px; font-weight:500;
+  padding:8px 16px; border-radius:999px; border:1px solid #333;
+  box-shadow:0 6px 22px rgba(0,0,0,.4); pointer-events:none; white-space:nowrap;
+}
+#figure-capture-banner kbd {
+  font:inherit; background:#2c2c2c; color:#cfcfcf; border-radius:4px;
+  padding:1px 5px; margin:0 1px; border:1px solid #3a3a3a;
+}
+#figure-toast {
+  position:fixed; bottom:24px; left:50%; transform:translateX(-50%); z-index:10060;
+  background:#1a1a1a; color:#e8e8e8; font-size:13px; padding:9px 16px;
+  border-radius:8px; border:1px solid #333; box-shadow:0 6px 22px rgba(0,0,0,.4);
+  opacity:0; transition:opacity .18s; pointer-events:none; max-width:80vw;
+}
+#figure-toast.show { opacity:1; }
+
+.chat-figure { margin:0 0 12px; }
+.chat-figure-img {
+  display:block; max-width:100%; border-radius:8px; border:1px solid #2c2c2c;
+  background:#fff;
+}
+.chat-figure-cap { font-size:11px; color:#666; margin-top:5px; line-height:1.4; }
+
 /* ── Sidebar ─────────────────────────────────────────── */
 #sidebar { width:360px; flex-shrink:0; background:#141414; display:flex; flex-direction:column; border-left:1px solid #252525; overflow:hidden; }
 #sidebar-header { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid #252525; flex-shrink:0; }
@@ -442,6 +489,13 @@ body {
     <div id="toolbar">
       <span id="paper-name">Loading…</span>
       <span id="source-badge"></span>
+      <!-- Persistent, unobtrusive recall of the figure-capture gesture. Clicking
+           it arms the same one-shot capture as the keyboard shortcut.
+           TODO(touch/iPad): this is also where a touch capture button would hook
+           in — arm armFigureCapture() and drive the drag from touch events. -->
+      <span id="figure-hint" title="Drag a box around any figure to have Claude explain it">
+        <kbd id="figure-hint-keys">⌘⇧F</kbd> explain a figure
+      </span>
       <button id="return-doc-btn" style="display:none">← Back</button>
       <button id="read-later-paper-btn" title="Save this paper to Read later">🔖 Read later</button>
       <button id="new-btn">← Library</button>
@@ -690,6 +744,9 @@ async function persistCurrentDoc() {
       mathKind: d.mathKind || null, mathTex: d.mathTex || null,
       note: d.note || null, onboarding: d.onboarding || false,
       feature: d.feature || null, tex: d.tex || null, cite: d.cite || null,
+      // Figure metadata only — the captured pixels live in IndexedDB (keyed by
+      // figure.imageKey), never in this localStorage/cloud doc state.
+      figure: d.figure || null, figureCaption: d.figureCaption || null,
     })),
   };
   try {
@@ -3248,14 +3305,440 @@ function startMathDiscussion(kind) {
 document.getElementById('explain-math-btn').addEventListener('click', () => startMathDiscussion('explain'));
 document.getElementById('to-code-btn').addEventListener('click', () => startMathDiscussion('code'));
 
+// ═══════════════════════════════════════════════════════
+//  FIGURE CAPTURE  (one-shot rectangle screenshot → explain)
+// ═══════════════════════════════════════════════════════
+// Modeled on macOS ⌘⇧4: a shortcut ARMS a single capture (crosshair + dim
+// overlay), the user drags ONE box, and on mouse-up we crop those pixels and
+// auto-return to normal reading. Esc / re-pressing the shortcut cancels. While
+// not armed, nothing changes — the overlay is the only thing intercepting
+// pointer events, so text selection, the discuss/math popover, etc. are
+// untouched, and tearing the overlay down restores the page exactly.
+const IS_MAC = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
+const FIGURE_MOD_LABEL = IS_MAC ? '⌘⇧F' : 'Ctrl⇧F';
+
+let captureArmed = false;
+let _captureEls = null;       // { overlay, banner } while armed
+let _captureDrag = null;      // { startX, startY, rect } during a drag
+
+function figureToast(msg, ms = 2600) {
+  let el = document.getElementById('figure-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'figure-toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  requestAnimationFrame(() => el.classList.add('show'));
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+// Only meaningful while a paper is open in the reader.
+function isFigureCaptureAvailable() {
+  return !!currentDocId && (currentMode === 'pdf' || currentMode === 'web');
+}
+
+function armFigureCapture() {
+  if (captureArmed || !isFigureCaptureAvailable()) return;
+  captureArmed = true;
+  hidePopover();
+  window.getSelection()?.removeAllRanges();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'figure-capture-overlay';
+  const banner = document.createElement('div');
+  banner.id = 'figure-capture-banner';
+  banner.innerHTML = `Drag a box around a figure &nbsp;·&nbsp; <kbd>Esc</kbd> to cancel`;
+
+  overlay.addEventListener('mousedown', onCaptureMouseDown);
+  document.body.appendChild(overlay);
+  document.body.appendChild(banner);
+  _captureEls = { overlay, banner };
+}
+
+function disarmFigureCapture() {
+  captureArmed = false;
+  if (_captureDrag?.rect) _captureDrag.rect.remove();
+  _captureDrag = null;
+  if (_captureEls) {
+    _captureEls.overlay.removeEventListener('mousedown', onCaptureMouseDown);
+    _captureEls.overlay.remove();
+    _captureEls.banner.remove();
+    _captureEls = null;
+  }
+  window.removeEventListener('mousemove', onCaptureMouseMove);
+  window.removeEventListener('mouseup', onCaptureMouseUp);
+}
+
+function onCaptureMouseDown(e) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const rect = document.createElement('div');
+  rect.className = 'fig-capture-rect';
+  document.body.appendChild(rect);
+  _captureDrag = { startX: e.clientX, startY: e.clientY, rect };
+  positionCaptureRect(e.clientX, e.clientY);
+  window.addEventListener('mousemove', onCaptureMouseMove);
+  window.addEventListener('mouseup', onCaptureMouseUp);
+}
+
+function positionCaptureRect(curX, curY) {
+  if (!_captureDrag) return;
+  const left = Math.min(_captureDrag.startX, curX);
+  const top = Math.min(_captureDrag.startY, curY);
+  const width = Math.abs(curX - _captureDrag.startX);
+  const height = Math.abs(curY - _captureDrag.startY);
+  Object.assign(_captureDrag.rect.style, {
+    left: left + 'px', top: top + 'px', width: width + 'px', height: height + 'px',
+  });
+  return { left, top, width, height };
+}
+
+function onCaptureMouseMove(e) { positionCaptureRect(e.clientX, e.clientY); }
+
+async function onCaptureMouseUp(e) {
+  if (!_captureDrag) { disarmFigureCapture(); return; }
+  e.preventDefault();
+  e.stopPropagation();
+  const box = positionCaptureRect(e.clientX, e.clientY);
+  // Tear the overlay down BEFORE reading pixels: the capture works off source
+  // canvases / <img> elements (not the composited screen), and removing it lets
+  // us probe the real DOM underneath. One-shot — we always return to reading.
+  disarmFigureCapture();
+
+  if (!box || box.width < 6 || box.height < 6) return; // a click, not a drag
+  figureToast('Capturing figure…', 1600);
+  let result = null;
+  try {
+    result = currentMode === 'pdf' ? capturePdfRegion(box) : await captureWebRegion(box);
+  } catch (err) {
+    console.warn('[Figure] capture failed:', err);
+  }
+  if (!result || !result.dataUrl) {
+    figureToast('Couldn’t capture that region — try boxing a single figure.');
+    return;
+  }
+  await startFigureDiscussion(result);
+}
+
+// ── PDF: crop from the rendered page canvas(es) ──────────
+// Composites every intersecting .pdf-canvas into one output canvas. Same-origin
+// canvas → toDataURL never taints.
+function capturePdfRegion(box) {
+  const canvases = [...document.querySelectorAll('#pdf-pages .pdf-canvas')];
+  const hits = [];
+  for (const c of canvases) {
+    const r = c.getBoundingClientRect();
+    const ix = Math.max(box.left, r.left), iy = Math.max(box.top, r.top);
+    const ax = Math.min(box.left + box.width, r.left + r.width);
+    const ay = Math.min(box.top + box.height, r.top + r.height);
+    if (ax - ix > 2 && ay - iy > 2) hits.push({ c, r, ix, iy, ax, ay, area: (ax - ix) * (ay - iy) });
+  }
+  if (!hits.length) return null;
+  hits.sort((a, b) => b.area - a.area);
+  const primary = hits[0];
+  const scale = primary.c.width / primary.r.width; // output device-px per CSS-px
+
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(box.width * scale));
+  out.height = Math.max(1, Math.round(box.height * scale));
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, out.width, out.height);
+
+  for (const h of hits) {
+    const sx = h.c.width / h.r.width, sy = h.c.height / h.r.height;
+    ctx.drawImage(
+      h.c,
+      (h.ix - h.r.left) * sx, (h.iy - h.r.top) * sy,
+      (h.ax - h.ix) * sx, (h.ay - h.iy) * sy,
+      (h.ix - box.left) * scale, (h.iy - box.top) * scale,
+      (h.ax - h.ix) * scale, (h.ay - h.iy) * scale,
+    );
+  }
+
+  const wrapper = primary.c.closest('.pdf-page-wrapper');
+  const wr = wrapper.getBoundingClientRect();
+  return {
+    dataUrl: out.toDataURL('image/png'),
+    mediaType: 'image/png',
+    caption: pdfCaptionForRect(wrapper, box),
+    pageNum: +wrapper.dataset.page || null,
+    wrapper,
+    relRects: [{ left: box.left - wr.left, top: box.top - wr.top, width: box.width, height: box.height }],
+    w: out.width, h: out.height,
+  };
+}
+
+// Grab text-layer spans inside the box plus a band just below it — figure
+// captions usually sit beneath the artwork.
+function pdfCaptionForRect(wrapper, box) {
+  const layer = wrapper.querySelector('.textLayer');
+  if (!layer) return '';
+  const band = {
+    left: box.left, top: box.top,
+    right: box.left + box.width,
+    bottom: box.top + box.height + Math.min(140, box.height * 0.7),
+  };
+  const spans = [...layer.querySelectorAll('span, div')]
+    .map((s) => ({ s, r: s.getBoundingClientRect() }))
+    .filter(({ r }) => r.width > 0 && r.right > band.left && r.left < band.right && r.bottom > band.top && r.top < band.bottom)
+    .sort((a, b) => (a.r.top - b.r.top) || (a.r.left - b.r.left));
+  return normalizePdfSelectionText(spans.map(({ s }) => s.textContent).join(' ')).slice(0, 400);
+}
+
+// ── Web/arXiv: rasterize the boxed region ────────────────
+// Primary path (covers ar5iv figures, which are <img>): find the media element
+// with the largest overlap and crop the box∩element region. <canvas>/<svg> are
+// rasterized directly; cross-origin <img> taint is worked around by reloading
+// with CORS, then by fetching the bytes through the existing CORS-proxy chain.
+// Fallback for pure HTML/CSS figures: a best-effort <foreignObject> snapshot.
+async function captureWebRegion(box) {
+  const aw = document.getElementById('article-wrapper');
+  const body = document.getElementById('article-body');
+  if (!aw || !body) return null;
+
+  const media = [...body.querySelectorAll('img, canvas, svg')];
+  let best = null;
+  for (const el of media) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    const ix = Math.max(box.left, r.left), iy = Math.max(box.top, r.top);
+    const ax = Math.min(box.left + box.width, r.left + r.width);
+    const ay = Math.min(box.top + box.height, r.top + r.height);
+    const w = ax - ix, h = ay - iy;
+    if (w > 2 && h > 2) {
+      const area = w * h;
+      if (!best || area > best.area) best = { el, r, area };
+    }
+  }
+
+  const ar = aw.getBoundingClientRect();
+  const relRects = [{ left: box.left - ar.left, top: box.top - ar.top, width: box.width, height: box.height }];
+
+  let dataUrl = null, caption = '';
+  if (best) {
+    dataUrl = await rasterizeElementCrop(best.el, best.r, box);
+    caption = webCaptionFor(best.el);
+  }
+  if (!dataUrl) {
+    dataUrl = await captureDomRegionFallback(box).catch(() => null);
+  }
+  if (!dataUrl) return null;
+  return { dataUrl, mediaType: 'image/png', caption, pageNum: null, wrapper: aw, relRects, w: box.width, h: box.height };
+}
+
+function loadImage(src, crossOrigin) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (crossOrigin) img.crossOrigin = crossOrigin;
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+// Crop the box∩element region out of an already-drawable source (image/canvas),
+// mapping CSS coords → the source's natural pixel grid. Throws if the source
+// canvas is tainted (cross-origin) — callers catch and retry.
+function cropDrawableToDataUrl(drawable, natW, natH, elRect, box) {
+  const sxScale = natW / elRect.width, syScale = natH / elRect.height;
+  const ix = Math.max(box.left, elRect.left), iy = Math.max(box.top, elRect.top);
+  const ax = Math.min(box.left + box.width, elRect.left + elRect.width);
+  const ay = Math.min(box.top + box.height, elRect.top + elRect.height);
+  const sw = Math.max(1, Math.round((ax - ix) * sxScale));
+  const sh = Math.max(1, Math.round((ay - iy) * syScale));
+  const out = document.createElement('canvas');
+  out.width = sw; out.height = sh;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, sw, sh);
+  ctx.drawImage(drawable, Math.round((ix - elRect.left) * sxScale), Math.round((iy - elRect.top) * syScale), sw, sh, 0, 0, sw, sh);
+  return out.toDataURL('image/png');
+}
+
+async function rasterizeElementCrop(el, elRect, box) {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'canvas') {
+    try { return cropDrawableToDataUrl(el, el.width, el.height, elRect, box); } catch (_) { return null; }
+  }
+  if (tag === 'svg') {
+    try {
+      const clone = el.cloneNode(true);
+      clone.setAttribute('width', elRect.width);
+      clone.setAttribute('height', elRect.height);
+      const xml = new XMLSerializer().serializeToString(clone);
+      const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+      const img = await loadImage(url);
+      return cropDrawableToDataUrl(img, elRect.width, elRect.height, elRect, box);
+    } catch (_) { return null; }
+  }
+  // <img>
+  const natW = el.naturalWidth || elRect.width, natH = el.naturalHeight || elRect.height;
+  try { return cropDrawableToDataUrl(el, natW, natH, elRect, box); } catch (_) {}
+  const src = el.currentSrc || el.src;
+  const viaCors = await loadImage(src, 'anonymous').catch(() => null);
+  if (viaCors) {
+    try { return cropDrawableToDataUrl(viaCors, viaCors.naturalWidth || natW, viaCors.naturalHeight || natH, elRect, box); } catch (_) {}
+  }
+  const blobUrl = await fetchImageViaProxy(src).catch(() => null);
+  if (blobUrl) {
+    try {
+      const img = await loadImage(blobUrl);
+      const u = cropDrawableToDataUrl(img, img.naturalWidth || natW, img.naturalHeight || natH, elRect, box);
+      URL.revokeObjectURL(blobUrl);
+      return u;
+    } catch (_) { URL.revokeObjectURL(blobUrl); }
+  }
+  return null;
+}
+
+// Reuse the same CORS-proxy hosts the article fetcher uses, but for image
+// BYTES → an object URL we can draw without tainting the canvas.
+async function fetchImageViaProxy(url) {
+  const timeout = AbortSignal.timeout ? AbortSignal.timeout(20000) : undefined;
+  const attempts = [
+    async () => { const r = await fetch(url, { signal: timeout }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); },
+    async () => { const r = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, { signal: timeout }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); },
+    async () => { const r = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`, { signal: timeout }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); },
+  ];
+  for (const attempt of attempts) {
+    try {
+      const blob = await attempt();
+      if (blob && blob.size > 64 && /^image\//.test(blob.type || 'image/')) return URL.createObjectURL(blob);
+    } catch (_) {}
+  }
+  return null;
+}
+
+// Best-effort rasterization of an arbitrary DOM region via an SVG
+// <foreignObject> clone. This is the documented imperfect fallback for figures
+// that aren't a single <img>/<canvas>/<svg>; external CSS and cross-origin
+// images may not survive, in which case it throws and the caller shows a toast.
+async function captureDomRegionFallback(box) {
+  const body = document.getElementById('article-body');
+  if (!body) return null;
+  const clone = body.cloneNode(true);
+  clone.querySelectorAll('script, .highlights-layer').forEach((n) => n.remove());
+  const br = body.getBoundingClientRect();
+  const w = Math.max(1, Math.round(box.width));
+  const h = Math.max(1, Math.round(box.height));
+  const offX = Math.round(box.left - br.left);
+  const offY = Math.round(box.top - br.top);
+  const html = new XMLSerializer().serializeToString(clone);
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+    `<foreignObject x="${-offX}" y="${-offY}" width="${br.width}" height="${br.height}">` +
+    `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${br.width}px;background:#fff">${html}</div>` +
+    `</foreignObject></svg>`;
+  const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  const img = await loadImage(url);
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0);
+  return out.toDataURL('image/png');
+}
+
+// Nearest caption for a captured web element: a <figure>'s <figcaption>, else a
+// neighbouring caption-ish element.
+function webCaptionFor(el) {
+  const fig = el.closest('figure');
+  const cap = fig?.querySelector('figcaption')
+    || el.parentElement?.querySelector('figcaption')
+    || el.nextElementSibling;
+  const txt = cap && /caption|figure|fig/i.test((cap.className || '') + ' ' + (cap.tagName || ''))
+    ? cap.textContent
+    : (fig?.querySelector('figcaption')?.textContent || '');
+  return (txt || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+}
+
+// Create a figure discussion: behaves like any other (highlight, persistence,
+// list/restore), but carries a captured image (stored in IndexedDB, NOT in the
+// localStorage doc state) and a figure-explanation framing. Seeded, NOT
+// auto-sent — clicking Send starts the conversation, matching the discuss flow.
+async function startFigureDiscussion(result) {
+  const id = Date.now();
+  const imageKey = `fig::${currentDocId || 'nodoc'}::${id}`;
+  const cap = result.caption || '';
+  const d = {
+    id,
+    txt: cap || (result.pageNum ? `Figure (captured region, p.${result.pageNum})` : 'Figure (captured region)'),
+    mode: currentMode,
+    pageNum: result.pageNum ?? null,
+    color: nextColor(),
+    wrapper: result.wrapper || null,
+    relRects: result.relRects || [],
+    messages: [],
+    figure: { kind: 'explain', imageKey, mediaType: result.mediaType || 'image/png', w: result.w || null, h: result.h || null },
+    figureCaption: cap || null,
+  };
+  d._figureDataUrl = result.dataUrl; // in-memory cache; persisted bytes live in IDB
+
+  try { await PaperStore.putFigure(imageKey, { dataUrl: result.dataUrl, mediaType: d.figure.mediaType, w: d.figure.w, h: d.figure.h }); }
+  catch (e) { console.warn('[Figure] could not store image in IndexedDB:', e); }
+
+  discussions.push(d);
+  if (d.wrapper && d.relRects.length) paintHighlight(d);
+  persistCurrentDoc();
+  openChat(id);
+
+  const input = document.getElementById('msg-input');
+  input.value = 'Explain this figure.';
+  input.focus();
+}
+
+// Lazy-load a figure's captured image (dataURL) from IndexedDB, caching it on
+// the discussion so repeated sends/renders don't re-read.
+async function ensureFigureImage(d) {
+  if (!d || !d.figure) return null;
+  if (d._figureDataUrl) return d._figureDataUrl;
+  try {
+    const rec = await PaperStore.getFigure(d.figure.imageKey);
+    if (rec && rec.dataUrl) { d._figureDataUrl = rec.dataUrl; return rec.dataUrl; }
+  } catch (e) { console.warn('[Figure] could not load image:', e); }
+  return null;
+}
+
+// Shortcut + hint affordance. Toggle arm on ⌘⇧F (Ctrl⇧F elsewhere); Esc cancels.
+document.addEventListener('keydown', (e) => {
+  const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+  if (mod && e.shiftKey && (e.key === 'f' || e.key === 'F') && !e.altKey) {
+    if (!isFigureCaptureAvailable() && !captureArmed) return;
+    e.preventDefault();
+    if (captureArmed) disarmFigureCapture(); else armFigureCapture();
+    return;
+  }
+  if (e.key === 'Escape' && captureArmed) { e.preventDefault(); disarmFigureCapture(); }
+});
+
+(function initFigureHint() {
+  const hint = document.getElementById('figure-hint');
+  const keys = document.getElementById('figure-hint-keys');
+  if (keys) keys.textContent = FIGURE_MOD_LABEL;
+  // Clicking the hint arms the same one-shot capture as the shortcut.
+  // TODO(touch/iPad): the keyboard shortcut doesn't exist on touch devices — a
+  // touch capture button would arm here and drive the drag from touchstart/
+  // touchmove/touchend instead of mouse events. Not implemented yet.
+  if (hint) hint.addEventListener('click', () => { if (!captureArmed) armFigureCapture(); });
+})();
+
 // Onboarding demo highlights auto-run the feature they advertise on first click,
 // so a first-time visitor sees citations / explain-math / to-code in action
 // without having to discover the gesture. After the demo has run once (math/code
 // leave a chat behind) clicks fall through to the normal discussion.
-const FEATURE_CTA = { math: '✨ Explain math', code: '{ } To code', citation: '📚 Show citation' };
+const FEATURE_CTA = { math: '✨ Explain math', code: '{ } To code', citation: '📚 Show citation', figure: '🖼 Explain a figure' };
 function runOnboardingDemo(d) {
   if (!d || !d.feature || d.feature === 'discuss') return false;
   if (d.messages && d.messages.length) return false;
+  // Figure can't be auto-run (it needs a real drag) — clicking the teaching
+  // highlight arms the one-shot capture so the user performs the gesture.
+  if (d.feature === 'figure') {
+    armFigureCapture();
+    figureToast('Drag a box around the figure above to capture it.');
+    return true;
+  }
   if (d.feature === 'citation') { showOnboardingCitationDemo(d); return true; }
   if (d.feature === 'math' || d.feature === 'code') {
     d.mathKind = d.feature === 'code' ? 'code' : 'explain';
@@ -3618,17 +4101,23 @@ document.getElementById('export-ratings-btn')?.addEventListener('click', exportR
 function rebuildChat(d) {
   const box = document.getElementById('chat-messages');
   box.innerHTML = '';
+  // Captured figures show a thumbnail at the top of the thread (lazy-loaded
+  // from IndexedDB), so the discussion always carries its image — fresh or
+  // restored — even before the first message.
+  if (d.figure) renderChatFigure(box, d);
   const vis = d.messages.filter(m => !m.hidden);
   if (!vis.length) {
-    const citeHint = d.note
+    const citeHint = d.figure
+      ? `${d.figureCaption ? '💡 ' + esc(d.figureCaption) + '<br><br>' : ''}Press Send to have Claude explain the captured figure above.`
+      : d.note
       ? `💡 ${esc(d.note)}<br><br>Ask anything about this passage — try “Explain this”, or select a formula for the math tools.`
       : d.citationMeta
       ? `Opened from a citation in “${esc(d.citationMeta.parentName)}”.<br>Ask anything about this paper.`
       : `Ask anything about this highlight.<br>Claude has the context of your earlier highlights in this document.`;
-    box.innerHTML = `<div id="chat-empty-hint">
+    box.insertAdjacentHTML('beforeend', `<div id="chat-empty-hint">
       <div class="ceh-icon">✦</div>
       ${citeHint}
-    </div>`;
+    </div>`);
     return;
   }
   d.messages.forEach((m, idx) => {
@@ -3637,6 +4126,18 @@ function rebuildChat(d) {
     if (m.role === 'assistant') renderRatingControl(div, d, idx);
   });
   box.scrollTop = box.scrollHeight;
+}
+
+// Render the captured figure thumbnail at the top of a figure discussion.
+function renderChatFigure(box, d) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-figure';
+  const img = document.createElement('img');
+  img.className = 'chat-figure-img';
+  img.alt = 'Captured figure';
+  wrap.appendChild(img);
+  box.appendChild(wrap);
+  ensureFigureImage(d).then((url) => { if (url) img.src = url; });
 }
 function addMsg(role, content, typing=false) {
   const box = document.getElementById('chat-messages');
@@ -3835,6 +4336,23 @@ async function sendMessage() {
     }
   }
 
+  // 3c) Figure framing (when the thread was started from a captured figure). The
+  // captured image rides on the first user turn (below); this block tells Claude
+  // how to explain it, grounded in the cached full document above.
+  if (d.figure) {
+    const capLine = d.figureCaption ? `\nNearby caption / context text: "${d.figureCaption}"\n` : '';
+    systemBlocks.push({
+      type: 'text',
+      text:
+        `=== FIGURE EXPLANATION REQUEST ===\n` +
+        `The researcher captured a figure (a diagram, plot, or attention/feature map) from this ` +
+        `paper; it is attached as an image on their message.${capLine}` +
+        `First, say in ONE line what the figure shows. Then walk through the key elements — axes, ` +
+        `components, what is being compared, and the takeaway — in plain language, tying it directly ` +
+        `to the paper's argument (use the FULL DOCUMENT above to ground it). Skip the obvious and be concise.`,
+    });
+  }
+
   // 4) The specific highlight + cross-highlight memory (small, dynamic)
   systemBlocks.push({
     type: 'text',
@@ -3844,6 +4362,28 @@ async function sendMessage() {
   });
 
   const apiMessages = d.messages.filter(m=>!m.hidden).slice(-14).map(({role,content})=>({role,content}));
+
+  // Attach the captured figure to the FIRST user turn as an image content block.
+  // handler.js forwards `messages` verbatim, so array content with a
+  // {type:'image'} block reaches the API unchanged — no key handling touched.
+  // Stored messages stay plain strings (cloud-safe); the image is materialized
+  // here, at send time, from IndexedDB.
+  if (d.figure) {
+    const dataUrl = await ensureFigureImage(d);
+    const firstUser = apiMessages.findIndex(m => m.role === 'user');
+    if (dataUrl && firstUser !== -1) {
+      const comma = dataUrl.indexOf(',');
+      const mediaType = dataUrl.slice(5, dataUrl.indexOf(';')) || d.figure.mediaType || 'image/png';
+      const userText = typeof apiMessages[firstUser].content === 'string' ? apiMessages[firstUser].content : 'Explain this figure.';
+      apiMessages[firstUser] = {
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: dataUrl.slice(comma + 1) } },
+          { type: 'text', text: userText },
+        ],
+      };
+    }
+  }
   if (d.mathKind) {
     const mathBlock = systemBlocks.find(b => /=== MATH/.test(b.text || ''));
     console.groupCollapsed(`[Math] ${d.mathKind} · → Claude`);
@@ -4116,7 +4656,7 @@ function sanitizeOnboarding(json) {
                    snippet: it.snippet,
                    type: it.type || 'prose',
                    note: typeof it.note === 'string' ? it.note : '',
-                   feature: ['math', 'code', 'citation', 'discuss'].includes(it.feature) ? it.feature : 'discuss',
+                   feature: ['math', 'code', 'citation', 'discuss', 'figure'].includes(it.feature) ? it.feature : 'discuss',
                    tex: typeof it.tex === 'string' ? it.tex : null,
                    cite: typeof it.cite === 'string' ? it.cite : null,
                  }))
@@ -4268,7 +4808,7 @@ function applyOnboardingItems(items) {
         const range = locateTextRange(body, item.snippet);
         const relRects = range ? rectsForRange(range, aw) : [];
         if (!relRects.length) { stillMissing.push(item); continue; }
-        const feature = ['math', 'code', 'citation', 'discuss'].includes(item.feature) ? item.feature : 'discuss';
+        const feature = ['math', 'code', 'citation', 'discuss', 'figure'].includes(item.feature) ? item.feature : 'discuss';
         const d = {
           id: Date.now() + discussions.length + Math.floor(Math.random() * 1000),
           txt: normalizeForMatch(range.toString()),
