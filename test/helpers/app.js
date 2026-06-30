@@ -1,15 +1,21 @@
 'use strict';
 
-// Loads the REAL front-end code (store.js + the inline <script> from
-// index.html) into a single Node `vm` context, mirroring the browser's script
-// load order. Returns a table of the app's functions plus accessors for the
-// module-level mutable state they read/write.
+// Loads the REAL front-end code (store.js + the app modules under js/) into a
+// single Node `vm` context, mirroring the browser's script load order. Returns
+// a table of the app's functions plus accessors for the module-level mutable
+// state they read/write.
 //
 // IMPORTANT (refactor contract): test files import named functions FROM THIS
-// HELPER, never by re-parsing index.html themselves. This is the single seam
+// HELPER, never by re-parsing the source themselves. This is the single seam
 // between the Phase-1 behavioural assertions and the code's physical layout.
-// When the app is later split into ES modules, only this loader changes to
-// import those modules — the test assertions stay byte-for-byte identical.
+// As the app is split into more ES modules, only this loader changes (extend
+// APP_MODULES below) — the test assertions stay byte-for-byte identical.
+//
+// Browser delivery is native ES modules (`<script type="module" src=...>`);
+// here we evaluate the same source in a vm for isolation (own timers / fetch /
+// console). `import`/`export` statements are stripped before concatenation so
+// the modules share one scope, exactly as the single inline script did. See
+// stripModuleSyntax().
 
 const fs = require('fs');
 const path = require('path');
@@ -18,12 +24,26 @@ const { buildSandbox } = require('./dom-stub');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
-function extractInlineScript(html) {
-  // External scripts are `<script src=...>`; the app code lives in the single
-  // bare `<script>` block. Match it (it contains no literal `</script>`).
-  const m = html.match(/<script>\s*([\s\S]*?)<\/script>/);
-  if (!m) throw new Error('Could not find inline <script> in index.html');
-  return m[1];
+// App modules in browser load order. The browser resolves the graph via
+// `import`; the vm shares one scope, so order only needs to satisfy top-level
+// (non-hoisted) execution — function declarations hoist across the bundle.
+const APP_MODULES = ['js/main.js'];
+
+// Strip ES-module syntax so the files can be concatenated into one vm script
+// sharing a single scope (function declarations hoist; cross-file references
+// resolve by name). This is a TEST-ONLY transform — the shipped files are real
+// ES modules served as-is. Kept deliberately simple: the app's own modules use
+// only `import ... from '...'` / bare `import '...'` and `export` on
+// declarations / `export { ... }` lists.
+function stripModuleSyntax(src) {
+  return src
+    // whole-line import statements (named / default / namespace / bare)
+    .replace(/^[ \t]*import\b[^\n]*?;[ \t]*$/gm, '')
+    .replace(/^[ \t]*import\s+['"][^'"]+['"];?[ \t]*$/gm, '')
+    // whole-line `export { ... };` / `export { ... } from '...';`
+    .replace(/^[ \t]*export\s*\{[^}]*\}\s*(from\s*['"][^'"]+['"])?;?[ \t]*$/gm, '')
+    // `export ` prefix on declarations (function/const/let/var/class/async)
+    .replace(/^([ \t]*)export\s+(?=(async\s+)?(function|const|let|var|class)\b)/gm, '$1');
 }
 
 // Additive test shim, concatenated into the SAME script scope so its getters/
@@ -78,9 +98,10 @@ let cached = null;
 function loadApp() {
   if (cached) return cached;
 
-  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-  const inline = extractInlineScript(html);
   const storeJs = fs.readFileSync(path.join(ROOT, 'store.js'), 'utf8');
+  const appSrc = APP_MODULES
+    .map((rel) => stripModuleSyntax(fs.readFileSync(path.join(ROOT, rel), 'utf8')))
+    .join('\n;\n');
 
   let onboardingJson = { tracks: [], papers: {}, featured: '' };
   try { onboardingJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'onboarding-curation.json'), 'utf8')); } catch (_) {}
@@ -88,7 +109,7 @@ function loadApp() {
   const { sandbox, helpers } = buildSandbox({ onboardingJson });
   vm.createContext(sandbox);
 
-  const combined = `${storeJs}\n;\n${inline}\n;\n${SHIM}\n`;
+  const combined = `${storeJs}\n;\n${appSrc}\n;\n${SHIM}\n`;
   vm.runInContext(combined, sandbox, { filename: 'paper-reader-app.bundle.js' });
 
   const PR = sandbox.__PR__;

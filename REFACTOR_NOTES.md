@@ -1,7 +1,7 @@
 # index.html modularization — working notes
 
 > Continuity note so this refactor can resume cleanly if context is lost.
-> Branch: `modularization`. Last updated: Phase 2 APPROVED with decisions; starting Phase 3.
+> Branch: `modularization`. Last updated: Phase 3 Step 0 DONE (harness swap, 116 green). Next: Step 1 extract js/util.js.
 
 ## APPROVED DECISIONS (Phase 2 sign-off)
 1. **Granularity: ~13 files.** Do sensible folds (highlights→chat, citation-log→citation-resolve, math→selection, + others) to land ~13. **Keep these three ISOLATED regardless** (high-risk, heavily-tested pure-logic cores): `state.js`, `persistence.js`, `citation-parse.js`. Split by "what's risky / changes together," not maximal tidiness.
@@ -126,7 +126,11 @@ Rules: pure refactor only; no feature changes / no behavior-altering renames; bu
 ## PROGRESS LOG
 - Phase 1: 116 tests green. Harness: test/helpers/{dom-stub,app}.js. `npm test` = `node --test`.
 - Phase 2: proposed + APPROVED with decisions above.
-- Phase 3: NOT STARTED. Next action → commit Phase 1 checkpoint, then Step 0.
+- Phase 3:
+  - Commit `461091a` — Phase 1 test suite + REFACTOR_NOTES.md checkpoint.
+  - **Step 0 DONE (116 green):** inline `<script>` moved verbatim → `js/main.js`; `index.html` now loads `<script type="module" src="/js/main.js">`. Test loader (`test/helpers/app.js`) now reads `APP_MODULES` (currently `['js/main.js']`), strips ES-module syntax, concatenates into the vm (browser uses native ESM; vm shares one scope for isolation). Verified strict-mode ESM eval + boot() via a throwaway `.mjs` smoke (deleted). Pre-checks: no inline HTML event handlers, no `javascript:` URLs, only `window.onPaperStore*` cross-scope assignments (survive module scope), `node --check --input-type=module` clean.
+  - **NEXT → Step 1:** extract `js/util.js` (esc, md, renderPreviewHtml, timeAgo, simpleHash, asGlobalRegex, normalizeForMatch, isTodoValue, decodeXmlText). main.js `import`s them; util.js `export`s them. Add `'js/util.js'` to APP_MODULES (BEFORE main.js). Run suite → green → commit.
+  - Harness note for splitting: when a module uses `import`/`export`, add it to APP_MODULES in load order; `stripModuleSyntax()` removes the syntax so the shared-scope vm bundle still works. Function declarations hoist across the bundle; only top-level non-hoisted execution order matters (keep util/state/const-defining modules before main.js).
 
 ## Final acceptance
 Full Phase 1 suite green; app loads; PDF + arXiv/web render; selection/discuss/math/figure/ELI5 work; highlights paint; Claude responds (proxy + cached full-paper context intact); persistence round-trips + guard holds; onboarding works for a new user; `node dev-server.js` and Vercel both serve it.
