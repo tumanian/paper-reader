@@ -1,4 +1,6 @@
 import { esc, renderPreviewHtml, md, timeAgo, simpleHash, asGlobalRegex, isTodoValue, normalizeForMatch, decodeXmlText } from './util.js';
+import { pdfDoc, discussions, activeId, pendingSel, pendingCitation, currentDocId, currentMode, docMeta, conversationSummary, summaryMessageCount, summaryDirty, returnToDocId, returnToDocName, bibByNumber, paperReferences, citationFormat, paperText, paperRefText } from './state.js';
+import { addDiscussion, removeDiscussion, clearDiscussions, replaceDiscussions, setPdfDoc, setActiveId, setPendingSel, setPendingCitation, setCurrentDocId, setCurrentMode, setDocMeta, setConversationSummary, setSummaryMessageCount, setSummaryDirty, setReturnToDocId, setReturnToDocName, setBibByNumber, setPaperReferences, setCitationFormat, setPaperText, setPaperRefText } from './state.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -216,9 +218,9 @@ function restoreDiscussions(saved) {
 }
 
 function loadDocSummary(saved) {
-  conversationSummary = saved?.conversationSummary || null;
-  summaryMessageCount = saved?.summaryMessageCount || 0;
-  summaryDirty = conversationMessageCount() > summaryMessageCount;
+  setConversationSummary(saved?.conversationSummary || null);
+  setSummaryMessageCount(saved?.summaryMessageCount || 0);
+  setSummaryDirty(conversationMessageCount() > summaryMessageCount);
 }
 
 function conversationMessageCount() {
@@ -243,7 +245,7 @@ function buildSummarySource() {
 function scheduleSummaryUpdate() {
   const count = conversationMessageCount();
   if (!count) return;
-  summaryDirty = count > summaryMessageCount;
+  setSummaryDirty(count > summaryMessageCount);
   if (!summaryDirty) return;
   clearTimeout(_summaryTimer);
   _summaryTimer = setTimeout(() => { maybeUpdateSummary(false); }, 45000);
@@ -261,9 +263,9 @@ async function maybeUpdateSummary(force = false) {
   _summaryInFlight = true;
   try {
     const summary = await callSummarize(source);
-    conversationSummary = summary;
-    summaryMessageCount = count;
-    summaryDirty = false;
+    setConversationSummary(summary);
+    setSummaryMessageCount(count);
+    setSummaryDirty(false);
     await persistCurrentDoc();
     renderLibrary();
     return true;
@@ -278,25 +280,15 @@ async function maybeUpdateSummary(force = false) {
 // ═══════════════════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════════════════
-let pdfDoc = null, discussions = [], activeId = null, pendingSel = null;
-let currentDocId = null, currentMode = null;
-let docMeta = { name:'', mode:'', badge:'', url:null };
-let conversationSummary = null, summaryMessageCount = 0, summaryDirty = false;
+// Shared, cross-cutting app state lives in state.js (single source of truth).
+// Reads use the imported live bindings; writes go through the imported writer
+// functions. Only feature-local plumbing remains declared here.
 let _summaryTimer = null, _summaryInFlight = false;
-let pendingCitation = null, returnToDocId = null, returnToDocName = null;
 let citePreviewAbort = null;
 let citePreviewTimer = null;
 let classifyTimer = null;
 let classifyToken = 0;
-let bibByNumber = {};
-let paperReferences = [];
-let citationFormat = null;
 let citationFormatPromise = null;
-
-// Full extracted text of the current paper (for context + caching).
-// Capped so we never blow past the long-context surcharge threshold.
-let paperText = '';
-let paperRefText = '';
 const MAX_PAPER_CHARS = 600000;   // ~150k tokens, safely under the 200k cap
 
 const COLORS = [
@@ -454,12 +446,12 @@ async function reopenDoc(docId) {
 
   // PDF: try stored bytes, or re-fetch arXiv PDF from saved abs URL
   startApp(doc.name, doc.badge || 'PDF');
-  currentMode = doc.mode;
-  currentDocId = docId;
-  docMeta = { name:doc.name, mode:doc.mode, badge:doc.badge, url:doc.url };
-  discussions = restoreDiscussions(doc.discussions);
+  setCurrentMode(doc.mode);
+  setCurrentDocId(docId);
+  setDocMeta({ name:doc.name, mode:doc.mode, badge:doc.badge, url:doc.url });
+  replaceDiscussions(restoreDiscussions(doc.discussions));
   loadDocSummary(doc);
-  citationFormat = doc.citationFormat || null;
+  setCitationFormat(doc.citationFormat || null);
 
   if (doc.mode === 'pdf') {
     setStatus('Loading saved PDF…');
@@ -517,15 +509,15 @@ async function loadPDF(file) {
   const name = file.name.replace(/\.pdf$/i,'');
   const id = docIdFor('pdf', name + ':' + file.size);
   startApp(name, 'PDF');
-  currentMode = 'pdf'; currentDocId = id;
-  docMeta = { name, mode:'pdf', badge:'PDF', url:null };
+  setCurrentMode('pdf'); setCurrentDocId(id);
+  setDocMeta({ name, mode:'pdf', badge:'PDF', url:null });
 
   // restore prior discussions for this doc, if any
   const store = loadStore();
   const saved = store[id];
-  discussions = saved ? restoreDiscussions(saved.discussions) : [];
+  replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
-  citationFormat = saved?.citationFormat || null;
+  setCitationFormat(saved?.citationFormat || null);
 
   setStatus('Rendering PDF…');
   const buf = await file.arrayBuffer();
@@ -544,7 +536,7 @@ async function loadPDF(file) {
 
 // Render a PDF from an ArrayBuffer (shared by fresh open and library reopen)
 async function renderFromBuffer(buf) {
-  pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+  setPdfDoc(await pdfjsLib.getDocument({ data: buf }).promise);
   await renderPDFPages();
 }
 
@@ -654,7 +646,7 @@ function normalizePdfSelectionText(text) {
 async function renderPDFPages() {
   const container = document.getElementById('pdf-pages');
   container.innerHTML = '';
-  paperText = '';
+  setPaperText('');
   const textChunks = [];
   for (let i = 1; i <= pdfDoc.numPages; i++) {
     const page = await pdfDoc.getPage(i);
@@ -694,8 +686,8 @@ async function renderPDFPages() {
     container.appendChild(wrap);
     if (i === 1) showViewer('pdf');
   }
-  paperText = textChunks.join('').slice(0, MAX_PAPER_CHARS);
-  paperRefText = extractReferencesSection(paperText);
+  setPaperText(textChunks.join('').slice(0, MAX_PAPER_CHARS));
+  setPaperRefText(extractReferencesSection(paperText));
   buildPaperReferences();
   void ensureCitationFormat();
 }
@@ -737,14 +729,14 @@ async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
 
   const id = knownDocId || docIdFor('web', url);
   startApp(hostname, 'Web');
-  currentMode = 'web'; currentDocId = id;
-  docMeta = { name:hostname, mode:'web', badge:'Web', url };
+  setCurrentMode('web'); setCurrentDocId(id);
+  setDocMeta({ name:hostname, mode:'web', badge:'Web', url });
 
   const store = loadStore();
   const saved = store[id];
-  discussions = saved ? restoreDiscussions(saved.discussions) : [];
+  replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
-  citationFormat = saved?.citationFormat || null;
+  setCitationFormat(saved?.citationFormat || null);
 
   try {
     setStatus('Fetching…');
@@ -756,9 +748,9 @@ async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
     if (!base) { base = doc.createElement('base'); doc.head.prepend(base); }
     base.href = url;
 
-    bibByNumber = {};
+    setBibByNumber({});
     indexBibliographyFromDoc(doc);
-    paperRefText = extractReferencesSectionFromDoc(doc);
+    setPaperRefText(extractReferencesSectionFromDoc(doc));
 
     let title = '', content = '';
     if (typeof Readability !== 'undefined') {
@@ -857,14 +849,14 @@ async function loadArxivPdf(rawUrl, knownDocId, citationContext = null) {
 
   const id = knownDocId || docIdFor('pdf', `arxiv:${arxivId}`);
   startApp(`arXiv:${arxivId}`, 'PDF');
-  currentMode = 'pdf';
-  currentDocId = id;
+  setCurrentMode('pdf');
+  setCurrentDocId(id);
 
   const store = loadStore();
   const saved = store[id];
-  discussions = saved ? restoreDiscussions(saved.discussions) : [];
+  replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
-  citationFormat = saved?.citationFormat || null;
+  setCitationFormat(saved?.citationFormat || null);
 
   const titleSignal = AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined;
 
@@ -875,7 +867,7 @@ async function loadArxivPdf(rawUrl, knownDocId, citationContext = null) {
       fetchArxivTitle(arxivId, titleSignal),
     ]);
 
-    docMeta = { name: title, mode: 'pdf', badge: 'PDF', url: absUrl };
+    setDocMeta({ name: title, mode: 'pdf', badge: 'PDF', url: absUrl });
     document.getElementById('paper-name').textContent = title;
 
     setStatus('Rendering PDF…');
@@ -939,14 +931,14 @@ function renderWebArticle(title, html, url) {
   document.querySelectorAll('#article-body script').forEach(s => s.remove());
   // capture full text for context + caching
   const bodyText = document.getElementById('article-body').innerText || '';
-  paperText = (`${title || ''}\n\n${bodyText}`).slice(0, MAX_PAPER_CHARS);
+  setPaperText((`${title || ''}\n\n${bodyText}`).slice(0, MAX_PAPER_CHARS));
   indexWebBibliography();
   buildPaperReferences();
   void ensureCitationFormat();
 }
 
 function buildPaperReferences() {
-  paperReferences = [];
+  setPaperReferences([]);
 
   for (const [id, entry] of Object.entries(bibByNumber).sort((a, b) => +a[0] - +b[0])) {
     paperReferences.push({
@@ -1149,11 +1141,11 @@ function startApp(name, badge) {
   document.getElementById('reload-note').style.display = 'none';
   document.getElementById('paper-name').textContent = name;
   document.getElementById('source-badge').textContent = badge;
-  activeId = null; pendingSel = null; paperText = '';
-  paperRefText = '';
-  bibByNumber = {};
-  paperReferences = [];
-  citationFormat = null;
+  setActiveId(null); setPendingSel(null); setPaperText('');
+  setPaperRefText('');
+  setBibByNumber({});
+  setPaperReferences([]);
+  setCitationFormat(null);
   citationFormatPromise = null;
 }
 function setStatus(msg) { document.getElementById('load-status').textContent = msg; }
@@ -2001,7 +1993,7 @@ async function ensureCitationFormat(force = false) {
           source: format.source || 'haiku',
         });
       }
-      citationFormat = { ...format, refCount: paperReferences.length };
+      setCitationFormat({ ...format, refCount: paperReferences.length });
       await persistCurrentDoc();
       return citationFormat;
     } catch (e) {
@@ -2215,12 +2207,12 @@ async function loadCitationPreview() {
   const cachedPreview = getCitationLogEntry(logKey);
   if (cachedPreview?.status === 'ok' && cachedPreview.preview) {
     logCitation('cache-hit', 'preview', { logKey, citationText: expandedSelection, url: cachedPreview.url });
-    pendingCitation = {
+    setPendingCitation({
       url: cachedPreview.url,
       refText: cachedPreview.refText || expandedSelection,
       label: expandedSelection,
       matchId: cachedPreview.matchId,
-    };
+    });
     citeBtn.style.display = cachedPreview.url ? 'flex' : 'none';
     citeBtn.textContent = '📖 Open citation';
     el.classList.remove('loading');
@@ -2279,7 +2271,7 @@ async function loadCitationPreview() {
       logCitation('fail', 'match', { logKey, selection: expandedSelection, reason: match.reason || 'not a citation' });
       el.style.display = 'none';
       citeBtn.style.display = 'none';
-      pendingCitation = null;
+      setPendingCitation(null);
       return;
     }
 
@@ -2301,7 +2293,7 @@ async function loadCitationPreview() {
       authors: ayMeta?.authorPart || bibMeta.authors || null,
       year: ayMeta?.yearStr || bibMeta.year || null,
     };
-    pendingCitation = cite;
+    setPendingCitation(cite);
 
     // ── STEP 2: title was found in the bibliography. Explain relevance. ──
     // URL resolution + abstract fetch are best-effort ENRICHMENT only — they
@@ -2317,7 +2309,7 @@ async function loadCitationPreview() {
         if (resolved?.url) {
           cite.url = resolved.url;
           urlMethod = resolved.method;
-          pendingCitation = cite;
+          setPendingCitation(cite);
         }
       } catch (e) {
         if (signal.aborted || e.name === 'AbortError') return;
@@ -2357,7 +2349,7 @@ async function loadCitationPreview() {
     if (!abstractOk) {
       cite.url = null;
       urlMethod = null;
-      pendingCitation = cite;
+      setPendingCitation(cite);
     }
     citeBtn.style.display = cite.url ? 'flex' : 'none';
     citeBtn.textContent = '📖 Open citation';
@@ -2434,7 +2426,7 @@ async function loadCitationPreview() {
     el.classList.remove('loading');
     el.innerHTML = `<div class="cite-preview-title">Citation</div><span style="color:#888">${esc(errMsg)}</span>`;
     citeBtn.style.display = 'none';
-    pendingCitation = null;
+    setPendingCitation(null);
   }
 }
 
@@ -2477,7 +2469,7 @@ function updatePopoverButtons() {
   citePreviewAbort?.abort();
   if (citePreviewTimer) { clearTimeout(citePreviewTimer); citePreviewTimer = null; }
   if (classifyTimer) { clearTimeout(classifyTimer); classifyTimer = null; }
-  pendingCitation = null;
+  setPendingCitation(null);
 
   if (!pendingSel) return;
   const sel = pendingSel;
@@ -2517,8 +2509,8 @@ function updateReturnButton() {
 }
 
 async function finishCitationNavigation(ctx) {
-  returnToDocId = ctx.parentDocId;
-  returnToDocName = ctx.parentName;
+  setReturnToDocId(ctx.parentDocId);
+  setReturnToDocName(ctx.parentName);
   updateReturnButton();
 
   const d = {
@@ -2537,7 +2529,7 @@ async function finishCitationNavigation(ctx) {
       refText: ctx.refText || '',
     },
   };
-  discussions.push(d);
+  addDiscussion(d);
   await persistCurrentDoc();
   renderList();
   openChat(d.id);
@@ -2557,8 +2549,8 @@ async function openCitationPaper() {
   };
   const citeLabel = pendingCitation.label;
 
-  pendingSel = null;
-  pendingCitation = null;
+  setPendingSel(null);
+  setPendingCitation(null);
   await maybeUpdateSummary(true);
   await persistCurrentDoc();
 
@@ -2594,8 +2586,8 @@ async function addSelectionToReadLater() {
     mode: cite?.url ? 'web' : docMeta.mode,
   });
 
-  pendingSel = null;
-  pendingCitation = null;
+  setPendingSel(null);
+  setPendingCitation(null);
   if (added) setStatus('Added to Read later');
 }
 
@@ -2616,19 +2608,19 @@ document.addEventListener('mouseup', e => {
     const rawRects = Array.from(range.getClientRects()).filter(r => r.width > 1);
     if (!rawRects.length) { hidePopover(); return; }
 
-    pendingCitation = parseCitation(txt);
-    if (!pendingCitation) pendingCitation = parseParentheticalAuthorYear(txt);
+    setPendingCitation(parseCitation(txt));
+    if (!pendingCitation) setPendingCitation(parseParentheticalAuthorYear(txt));
     if (txt.length < 2 && !pendingCitation) { hidePopover(); return; }
 
     const pageWrap = selEl.closest('.pdf-page-wrapper');
     if (pageWrap) {
       const pr = pageWrap.getBoundingClientRect();
       const cleanTxt = normalizePdfSelectionText(txt);
-      pendingSel = {
+      setPendingSel({
         txt: cleanTxt, range: range.cloneRange(), mode:'pdf', pageNum:+pageWrap.dataset.page, wrapper: pageWrap,
         relRects: rawRects.map(r => ({ left:r.left-pr.left, top:r.top-pr.top, width:r.width, height:r.height })),
         mathTex: captureSelectionTex(range, selEl), math: null
-      };
+      });
       positionPopover(rawRects[rawRects.length-1]);
       updatePopoverButtons();
       return;
@@ -2637,11 +2629,11 @@ document.addEventListener('mouseup', e => {
     const aw = document.getElementById('article-wrapper');
     if (aw && selEl.closest('#article-body, #article-heading')) {
       const ar = aw.getBoundingClientRect();
-      pendingSel = {
+      setPendingSel({
         txt, range: range.cloneRange(), mode:'web', pageNum:null, wrapper:aw,
         relRects: rawRects.map(r => ({ left:r.left-ar.left, top:r.top-ar.top, width:r.width, height:r.height })),
         mathTex: captureSelectionTex(range, selEl), math: null
-      };
+      });
       positionPopover(rawRects[rawRects.length-1]);
       updatePopoverButtons();
       return;
@@ -2670,7 +2662,7 @@ function hidePopover() {
   if (classifyTimer) { clearTimeout(classifyTimer); classifyTimer = null; }
   classifyToken++;  // invalidate any in-flight classification
   citePreviewAbort?.abort();
-  pendingCitation = null;
+  setPendingCitation(null);
   document.getElementById('cite-preview').style.display = 'none';
   document.getElementById('cite-preview').innerHTML = '';
 }
@@ -2686,9 +2678,9 @@ document.getElementById('ask-btn').addEventListener('click', () => {
   const d = { id:Date.now(), txt:pendingSel.txt, mode:pendingSel.mode,
                pageNum:pendingSel.pageNum, color:nextColor(), wrapper:pendingSel.wrapper,
                relRects:pendingSel.relRects, messages:[] };
-  discussions.push(d);
-  pendingSel = null;
-  pendingCitation = null;
+  addDiscussion(d);
+  setPendingSel(null);
+  setPendingCitation(null);
 
   paintHighlight(d);
   persistCurrentDoc();
@@ -2707,9 +2699,9 @@ function startMathDiscussion(kind) {
                pageNum:sel.pageNum, color:nextColor(), wrapper:sel.wrapper,
                relRects:sel.relRects, messages:[],
                mathKind:kind, mathTex:(sel.math && sel.math.tex) || null };
-  discussions.push(d);
-  pendingSel = null;
-  pendingCitation = null;
+  addDiscussion(d);
+  setPendingSel(null);
+  setPendingCitation(null);
 
   console.groupCollapsed(`[Math] ${kind} · selected formula`);
   console.log('rendered selection:', d.txt);
@@ -3102,7 +3094,7 @@ async function startFigureDiscussion(result) {
   try { await PaperStore.putFigure(imageKey, { dataUrl: result.dataUrl, mediaType: d.figure.mediaType, w: d.figure.w, h: d.figure.h }); }
   catch (e) { console.warn('[Figure] could not store image in IndexedDB:', e); }
 
-  discussions.push(d);
+  addDiscussion(d);
   if (d.wrapper && d.relRects.length) paintHighlight(d);
   persistCurrentDoc();
   openChat(id);
@@ -3190,12 +3182,12 @@ function showOnboardingCitationDemo(d) {
   // d.cite (e.g. "[13]") drives the matcher directly; passing range:null skips
   // expandSelectionText so the marker isn't clobbered by the prose anchor text.
   const txt = d.cite || range.toString();
-  pendingSel = {
+  setPendingSel({
     txt, range: d.cite ? null : range.cloneRange(), mode: 'web', pageNum: null, wrapper: aw,
     relRects: rects.map(r => ({ left: r.left - ar.left, top: r.top - ar.top, width: r.width, height: r.height })),
     mathTex: null, math: null,
-  };
-  pendingCitation = parseCitation(txt) || parseParentheticalAuthorYear(txt);
+  });
+  setPendingCitation(parseCitation(txt) || parseParentheticalAuthorYear(txt));
   document.getElementById('explain-math-btn').style.display = 'none';
   document.getElementById('to-code-btn').style.display = 'none';
   positionPopover(rects[rects.length - 1]);
@@ -3218,8 +3210,8 @@ document.getElementById('return-doc-btn').addEventListener('click', async () => 
   if (!returnToDocId) return;
   const target = returnToDocId;
   const targetName = returnToDocName;
-  returnToDocId = null;
-  returnToDocName = null;
+  setReturnToDocId(null);
+  setReturnToDocName(null);
   updateReturnButton();
   await maybeUpdateSummary(true);
   persistCurrentDoc();
@@ -3290,7 +3282,7 @@ function deleteDiscussion(id) {
     const layer = d.wrapper.querySelector('.highlights-layer');
     if (layer) layer.innerHTML = '';
   }
-  discussions = discussions.filter(x => x.id !== id);
+  removeDiscussion(id);
   // repaint remaining on this wrapper
   const wraps = new Set(discussions.map(x => x.wrapper).filter(Boolean));
   wraps.forEach(w => { const l = w.querySelector('.highlights-layer'); if (l) l.innerHTML=''; });
@@ -3303,7 +3295,7 @@ function deleteDiscussion(id) {
 //  CHAT
 // ═══════════════════════════════════════════════════════
 function openChat(id) {
-  activeId = id;
+  setActiveId(id);
   const d = discussions.find(x => x.id === id); if (!d) return;
   document.getElementById('disc-list-panel').style.display = 'none';
   document.getElementById('chat-panel').style.display = 'flex';
@@ -3324,7 +3316,7 @@ function scrollHighlightIntoView(d) {
   }
 }
 function showList() {
-  activeId = null;
+  setActiveId(null);
   document.getElementById('chat-panel').style.display = 'none';
   document.getElementById('disc-list-panel').style.display = 'flex';
   renderList();
@@ -3879,10 +3871,10 @@ function backToUpload() {
   cancelOnboardingPlacement();
   persistCurrentDoc();
   clearTimeout(_summaryTimer);
-  pdfDoc=null; discussions=[]; activeId=null; pendingSel=null;
-  currentDocId=null; currentMode=null;
-  conversationSummary=null; summaryMessageCount=0; summaryDirty=false;
-  returnToDocId=null; returnToDocName=null;
+  setPdfDoc(null); clearDiscussions(); setActiveId(null); setPendingSel(null);
+  setCurrentDocId(null); setCurrentMode(null);
+  setConversationSummary(null); setSummaryMessageCount(0); setSummaryDirty(false);
+  setReturnToDocId(null); setReturnToDocName(null);
   updateReturnButton();
   document.getElementById('pdf-pages').innerHTML='';
   document.getElementById('pdf-pages').style.display='none';
@@ -4168,7 +4160,7 @@ function maybeApplyOnboardingCuration() {
     if (!refreshable) return;
     const layer = document.getElementById('article-wrapper')?.querySelector('.highlights-layer');
     if (layer) layer.innerHTML = '';
-    discussions = [];
+    clearDiscussions();
   }
   applyOnboardingItems(paper.items.slice());
 }
@@ -4206,7 +4198,7 @@ function applyOnboardingItems(items) {
           note: item.note || null, onboarding: true,
           feature, tex: item.tex || null, cite: item.cite || null,
         };
-        discussions.push(d);
+        addDiscussion(d);
         paintHighlight(d);
         placedAny = true;
       } catch (e) { console.warn('[Onboarding] skipped a curation item:', e?.message); }
