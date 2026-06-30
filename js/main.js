@@ -1,3 +1,5 @@
+import { esc, renderPreviewHtml, md, timeAgo, simpleHash, asGlobalRegex, isTodoValue, normalizeForMatch, decodeXmlText } from './util.js';
+
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
@@ -378,11 +380,6 @@ document.getElementById('clear-lib').addEventListener('click', async () => {
 // ═══════════════════════════════════════════════════════
 //  READ LATER
 // ═══════════════════════════════════════════════════════
-function simpleHash(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  return Math.abs(h).toString(36);
-}
 async function addToReadLater(item) {
   const id = item.id || (item.url ? 'rl::' + simpleHash(item.url) : 'rl::' + simpleHash(item.citationText || item.title));
   const added = await PaperStore.addReadLater({ ...item, id });
@@ -1174,12 +1171,6 @@ const CITE_LOG_MAX = 150;
 const CITE_FAIL_TTL_MS = 60 * 60 * 1000;
 let citationLog = null;
 
-function asGlobalRegex(re) {
-  const flags = re.flags || '';
-  if (flags.includes('g')) return re;
-  return new RegExp(re.source, flags + 'g');
-}
-
 function loadCitationLogStore() {
   if (citationLog) return citationLog;
   try { citationLog = JSON.parse(localStorage.getItem(CITE_LOG_KEY)) || {}; }
@@ -1798,13 +1789,6 @@ async function resolveCitationUrl(cite, signal) {
     fail('url', 'Could not resolve citation to a URL', { method: 'none' });
   }
   return null;
-}
-
-function decodeXmlText(s) {
-  if (!s) return '';
-  const el = document.createElement('textarea');
-  el.innerHTML = s.replace(/\s+/g, ' ').trim();
-  return el.value;
 }
 
 function arxivIdFromUrl(url) {
@@ -3914,37 +3898,6 @@ function backToUpload() {
   renderLibrary();
 }
 
-// ═══════════════════════════════════════════════════════
-//  UTILITIES
-// ═══════════════════════════════════════════════════════
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function renderPreviewHtml(text) {
-  const lines = String(text || '')
-    .split(/\r?\n+/)
-    .map((l) => l.replace(/^\s*[•\-*]\s*/, '').trim())
-    .filter(Boolean);
-  if (lines.length <= 1) return esc(text || '');
-  return `<ul class="cite-takeaways">${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>`;
-}
-function md(s) {
-  return s
-    .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g,'<em>$1</em>')
-    .replace(/`([^`]+)`/g,'<code style="background:#2a2a2a;padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
-    .replace(/\n\n/g,'</p><p style="margin-top:8px">')
-    .replace(/\n/g,'<br>');
-}
-function timeAgo(ts) {
-  const s = Math.floor((Date.now()-ts)/1000);
-  if (s < 60)     return 'just now';
-  if (s < 3600)   return Math.floor(s/60)+'m ago';
-  if (s < 86400)  return Math.floor(s/3600)+'h ago';
-  if (s < 604800) return Math.floor(s/86400)+'d ago';
-  return new Date(ts).toLocaleDateString();
-}
-
 // Boot
 function updateAuthBar(info) {
   const btn = document.getElementById('login-btn');
@@ -4077,9 +4030,6 @@ function cancelOnboardingPlacement() {
   if (_onboardingCancel) { try { _onboardingCancel(); } catch (_) {} _onboardingCancel = null; }
 }
 let pendingOnboarding = null;
-
-function isTodoValue(s) { return !s || /^\s*TODO/i.test(String(s)); }
-function normalizeForMatch(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
 
 // Defensive parse: tolerate malformed entries without losing the rest.
 function sanitizeOnboarding(json) {
