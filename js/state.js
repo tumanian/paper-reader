@@ -38,6 +38,9 @@ export let citationFormat = null;
 export let paperText = '';
 export let paperRefText = '';
 
+// Cap on the extracted paper text, ~150k tokens, safely under the 200k cap.
+export const MAX_PAPER_CHARS = 600000;
+
 // ── Pure transition helpers (unit-tested in isolation) ──────────────────────
 export function removeById(list, id) {
   return list.filter((x) => x.id !== id);
