@@ -46,6 +46,18 @@ export const MAX_PAPER_CHARS = 600000;
 export let citationFormatPromise = null;
 export function setCitationFormatPromise(v) { citationFormatPromise = v; }
 
+// Highlight color palette + next-color picker (cycles by discussion count).
+// Shared by selection, chat, and onboarding — a discussion-level helper.
+export const COLORS = [
+  { bg:'rgba(255,215,0,.45)',   dot:'#c9a000' },
+  { bg:'rgba(80,210,130,.45)',  dot:'#1a9950' },
+  { bg:'rgba(100,165,255,.45)', dot:'#2e72e0' },
+  { bg:'rgba(255,110,150,.45)', dot:'#d02060' },
+  { bg:'rgba(195,115,255,.45)', dot:'#8830d8' },
+  { bg:'rgba(255,145,60,.45)',  dot:'#d05010' },
+];
+export function nextColor() { return COLORS[discussions.length % COLORS.length]; }
+
 // ── Pure transition helpers (unit-tested in isolation) ──────────────────────
 export function removeById(list, id) {
   return list.filter((x) => x.id !== id);
