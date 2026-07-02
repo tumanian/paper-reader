@@ -449,6 +449,7 @@ window.PaperStore = (function () {
 
   async function refreshFromCloud() {
     if (!useCloud || !userId || !supabase) return;
+    const refreshFor = userId;
 
     const localDocsSnapshot = loadLocalDocs();
     const localRlSnapshot = loadLocalReadLater();
@@ -456,8 +457,10 @@ window.PaperStore = (function () {
 
     try {
       await loadFromCloud();
+      if (userId !== refreshFor) return;
       cloudDocs = { ...docs };
     } catch (e) {
+      if (userId !== refreshFor) return;
       setSyncError(e);
       mergeLocalDocs();
       mergeLocalReadLater();
@@ -480,18 +483,22 @@ window.PaperStore = (function () {
     const cloudRlIds = new Set(readLater.map((i) => i.id));
     const rlToPush = localRlSnapshot.filter((i) => !cloudRlIds.has(i.id));
 
+    if (userId !== refreshFor) return;
     saveLocalDocs(docs);
     saveLocalReadLater(readLater);
 
     let ok = true;
     for (const doc of toPush) {
+      if (userId !== refreshFor) return;
       try { await saveDocToCloud(doc); }
       catch (e) { ok = false; setSyncError(e); }
     }
     for (const item of rlToPush) {
+      if (userId !== refreshFor) return;
       try { await saveReadLaterToCloud(item); }
       catch (e) { ok = false; setSyncError(e); }
     }
+    if (userId !== refreshFor) return;
     if (ok) setSyncError(null);
   }
 
@@ -532,6 +539,13 @@ window.PaperStore = (function () {
   }
 
   function loadLocalState() {
+    // Cloud configured but signed out: no personal library (onboarding only).
+    // The `.local` namespace is for true local-only mode (!supabase).
+    if (supabase && !userId) {
+      docs = {};
+      readLater = [];
+      return;
+    }
     docs = loadLocalDocs();
     readLater = loadLocalReadLater();
   }
@@ -674,6 +688,9 @@ window.PaperStore = (function () {
   function isCloud() { return useCloud && !!userId; }
 
   async function saveDoc(doc) {
+    // Signed out with cloud configured: personal saves are a no-op (prevents
+    // logout/backToUpload races from leaking signed-in data into .local).
+    if (supabase && !userId) return;
     docs[doc.id] = doc;
     saveLocalDocs(docs);
     if (!useCloud || !userId) return;

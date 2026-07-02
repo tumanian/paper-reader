@@ -324,12 +324,14 @@ export function initLibrary() {
 
   document.getElementById('google-signin-btn').addEventListener('click', signIn);
   document.getElementById('auth-logout-btn').addEventListener('click', async () => {
+    // Persist + clear the open doc WHILE still signed in, so saveDoc targets
+    // the user's namespace — not .local after signOut.
+    _backToUpload();
     await PaperStore.signOut();
     updateAuthBar(PaperStore.getSyncStatus());
     renderLibrary();
     renderReadLater();
     loginWidget.classList.remove('open');
-    _backToUpload();
   });
 
   window.onPaperStoreSyncChange = (info) => {

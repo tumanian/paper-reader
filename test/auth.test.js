@@ -249,6 +249,43 @@ test('cloud rows and queries are scoped by the Supabase user id, not the email',
   assert.deepEqual(sel.filters, [['owner_email', USER_A.id]]);
 });
 
+test('signed out with cloud configured shows an empty store even if .local has data', async () => {
+  cloudConfig();
+  app.localStorage.setItem('paperReader.docs.v2.local', JSON.stringify({
+    'web::leaked': { id: 'web::leaked', name: 'Leaked', mode: 'web', discussions: [] },
+  }));
+  await PaperStore.init();
+  assert.equal(PaperStore.isSignedIn(), false);
+  assert.deepEqual(app.plain(PaperStore.getStore()), {});
+  assert.equal(PaperStore.getReadLater().length, 0);
+});
+
+test('saveDoc is a no-op when cloud is configured but signed out', async () => {
+  cloudConfig();
+  await PaperStore.init();
+  await PaperStore.saveDoc({
+    id: 'web::ghost', name: 'Ghost', mode: 'web', badge: 'Web', url: 'http://g', updated: 1,
+    discussions: [],
+  });
+  assert.deepEqual(app.plain(PaperStore.getStore()), {});
+  assert.equal(app.localStorage.getItem('paperReader.docs.v2.local'), null);
+});
+
+test('signOut clears the in-memory library (signed-in papers must not linger)', async () => {
+  cloudConfig();
+  app.fakeSupabase.setSession(sessionFor(USER_A));
+  await PaperStore.init();
+  await PaperStore.saveDoc({
+    id: 'web::mine', name: 'Mine', mode: 'web', badge: 'Web', url: 'http://m', updated: 1,
+    discussions: [{ id: 1, txt: 'hi', messages: [{ role: 'user', content: 'q' }] }],
+  });
+  assert.ok(PaperStore.getStore()['web::mine']);
+
+  await PaperStore.signOut();
+  assert.equal(PaperStore.isSignedIn(), false);
+  assert.deepEqual(app.plain(PaperStore.getStore()), {});
+});
+
 test('local caches are namespaced per user id and separated between accounts', async () => {
   cloudConfig();
   app.fakeSupabase.setSession(sessionFor(USER_A));
