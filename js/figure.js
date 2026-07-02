@@ -22,7 +22,7 @@ let captureArmed = false;
 let _captureEls = null;       // { overlay, banner } while armed
 let _captureDrag = null;      // { startX, startY, rect } during a drag
 
-function figureToast(msg, ms = 2600) {
+export function figureToast(msg, ms = 2600) {
   let el = document.getElementById('figure-toast');
   if (!el) {
     el = document.createElement('div');
@@ -40,7 +40,7 @@ function isFigureCaptureAvailable() {
   return !!currentDocId && (currentMode === 'pdf' || currentMode === 'web');
 }
 
-function armFigureCapture() {
+export function armFigureCapture() {
   if (captureArmed || !isFigureCaptureAvailable()) return;
   captureArmed = true;
   hidePopover();
