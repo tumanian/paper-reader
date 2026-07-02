@@ -10,7 +10,9 @@ const assert = require('node:assert/strict');
 const app = require('./helpers/app.js');
 const { PaperStore, plain } = app;
 
-const STORE_KEY = 'paperReader.docs.v1';
+// Signed-out sessions persist under the fixed 'local' namespace (v2 keys are
+// namespaced per Supabase user id when signed in).
+const STORE_KEY = 'paperReader.docs.v2.local';
 
 before(async () => { await app.ready; });
 
@@ -43,7 +45,7 @@ test('saveDoc → getStore round-trips the document', async () => {
   ]);
 });
 
-test('saveDoc mirrors to localStorage under the v1 key', async () => {
+test('saveDoc mirrors to localStorage under the namespaced v2 key', async () => {
   await PaperStore.saveDoc(sampleDoc());
   const raw = JSON.parse(app.localStorage.getItem(STORE_KEY));
   assert.ok(raw['web::a']);
@@ -100,7 +102,7 @@ test('addReadLater / getReadLater / removeReadLater', async () => {
 
 test('read later mirrors to localStorage', async () => {
   await PaperStore.addReadLater({ id: 'rl::x', title: 'X', url: 'http://x' });
-  const raw = JSON.parse(app.localStorage.getItem('paperReader.readLater.v1'));
+  const raw = JSON.parse(app.localStorage.getItem('paperReader.readLater.v2.local'));
   assert.equal(raw[0].id, 'rl::x');
 });
 
