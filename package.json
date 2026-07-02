@@ -4,7 +4,8 @@
   "description": "AI research paper reader — highlight text in PDFs or web articles and discuss in-place with Claude",
   "scripts": {
     "start": "node dev-server.js",
-    "dev": "./start-local.sh"
+    "dev": "./start-local.sh",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
