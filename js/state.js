@@ -41,6 +41,11 @@ export let paperRefText = '';
 // Cap on the extracted paper text, ~150k tokens, safely under the 200k cap.
 export const MAX_PAPER_CHARS = 600000;
 
+// In-flight guard for the async citation-format detection (shared between the
+// web/pdf loaders that reset it and the resolver that populates it).
+export let citationFormatPromise = null;
+export function setCitationFormatPromise(v) { citationFormatPromise = v; }
+
 // ── Pure transition helpers (unit-tested in isolation) ──────────────────────
 export function removeById(list, id) {
   return list.filter((x) => x.id !== id);
