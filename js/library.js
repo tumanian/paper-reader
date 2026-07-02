@@ -47,8 +47,8 @@ export function renderLibrary() {
 
   // Featured example is an invitation for logged-out visitors only. Once they
   // open it, it's saved as a doc — so dedupe by URL and just sparkle that card
-  // instead of showing a separate invitation.
-  const loggedIn = !!(PaperStore.getEmail && PaperStore.getEmail());
+  // instead of showing a separate invitation. Signed-in = real Supabase session.
+  const loggedIn = !!(PaperStore.getUserId && PaperStore.getUserId());
   const featured = loggedIn ? null : _getFeaturedPaper();
   const normUrl = (u) => (u || '').trim().replace(/\/+$/, '').toLowerCase();
   const featUrl = featured ? normUrl(featured.url) : '';
@@ -215,49 +215,58 @@ export async function reopenDoc(docId) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  AUTH  (login widget + sync status)
+//  AUTH  (login widget + sync status — real Supabase session)
 // ═══════════════════════════════════════════════════════
 export function updateAuthBar(info) {
   const btn = document.getElementById('login-btn');
   const label = btn && btn.querySelector('.lw-label');
   const statusEl = document.getElementById('login-status');
-  const form = document.getElementById('login-form');
-  const emailInput = document.getElementById('auth-email-input');
+  const signinBtn = document.getElementById('google-signin-btn');
   const logoutBtn = document.getElementById('auth-logout-btn');
+  const avatar = document.getElementById('login-avatar');
   if (!btn) return;
 
-  let loggedIn = false;
-  let status = '<strong>Log in</strong> with your email to sync your library across devices.';
+  const identity = info && info.identity ? info.identity : null;
+  const signedIn = !!identity;
+  const who = identity ? (identity.name || identity.email || 'Signed in') : null;
+  const localOnly = !!info && info.mode === 'local';
+
+  let status = '<strong>Sign in with Google</strong> to sync your library across devices.';
   let dotColor = '';
 
-  if (info) {
-    if (info.email) {
-      loggedIn = true;
-      emailInput.value = info.email;
-      if (info.lastSyncError) {
-        dotColor = '#d6453f';
-        status = `<strong>${esc(info.email)}</strong> — sync issue.<span class="sync-err">${esc(info.lastSyncError)}</span>`;
-      } else if (info.syncing) {
-        dotColor = '#e0a000';
-        status = `<strong>${esc(info.email)}</strong> — syncing ${info.docCount || 0} paper${info.docCount === 1 ? '' : 's'} from cloud…`;
-      } else if (info.useCloud) {
-        dotColor = '#36b37e';
-        status = `<strong>${esc(info.email)}</strong> — ${info.docCount || 0} paper${info.docCount === 1 ? '' : 's'} synced. Same email on any device loads your library.`;
-      } else {
-        dotColor = '#9aa0a6';
-        status = `<strong>${esc(info.email)}</strong> — saved locally only.`;
-      }
-    } else if (info.mode === 'local') {
-      status = info.error
-        ? `<strong>Local only</strong><span class="sync-err">${esc(info.error)}</span>`
-        : '<strong>Local only</strong> — cloud not configured.';
+  if (signedIn) {
+    if (info.lastSyncError) {
+      dotColor = '#d6453f';
+      status = `<strong>${esc(who)}</strong> — sync issue.<span class="sync-err">${esc(info.lastSyncError)}</span>`;
+    } else if (info.syncing) {
+      dotColor = '#e0a000';
+      status = `<strong>${esc(who)}</strong> — syncing ${info.docCount || 0} paper${info.docCount === 1 ? '' : 's'} from cloud…`;
+    } else if (info.useCloud) {
+      dotColor = '#36b37e';
+      status = `<strong>${esc(who)}</strong> — ${info.docCount || 0} paper${info.docCount === 1 ? '' : 's'} synced. Sign in with the same Google account on any device to load your library.`;
+    } else {
+      dotColor = '#9aa0a6';
+      status = `<strong>${esc(who)}</strong> — saved locally only.`;
+    }
+  } else if (localOnly) {
+    status = info.error
+      ? `<strong>Local only</strong><span class="sync-err">${esc(info.error)}</span>`
+      : '<strong>Local only</strong> — cloud not configured.';
+  }
+
+  if (label) label.textContent = signedIn ? who : 'Sign in';
+
+  if (avatar) {
+    if (signedIn && identity.avatar) {
+      avatar.src = identity.avatar;
+      avatar.style.display = '';
+    } else {
+      avatar.style.display = 'none';
     }
   }
 
-  if (label) label.textContent = loggedIn ? info.email : 'Log in';
-
   let dot = btn.querySelector('.lw-dot');
-  if (loggedIn) {
+  if (signedIn) {
     if (!dot) { dot = document.createElement('span'); dot.className = 'lw-dot'; btn.insertBefore(dot, label); }
     dot.style.background = dotColor;
   } else if (dot) {
@@ -265,21 +274,18 @@ export function updateAuthBar(info) {
   }
 
   statusEl.innerHTML = status;
-  form.style.display = loggedIn ? 'none' : 'flex';
-  logoutBtn.style.display = loggedIn ? 'block' : 'none';
+  // Sign-in is only possible when a Supabase project is configured.
+  if (signinBtn) signinBtn.style.display = signedIn || localOnly ? 'none' : 'flex';
+  logoutBtn.style.display = signedIn ? 'block' : 'none';
 }
 
-export async function loadLibraryForEmail() {
-  const email = document.getElementById('auth-email-input').value.trim();
-  if (!email) return;
+// Starts the Google OAuth redirect via Supabase Auth. The page navigates away
+// to Google and returns with a session, which boot()/init() picks up.
+export async function signIn() {
   try {
-    const info = await PaperStore.setEmail(email);
-    updateAuthBar(info);
-    renderLibrary();
-    renderReadLater();
-    document.getElementById('login-widget').classList.remove('open');
+    await PaperStore.signInWithGoogle();
   } catch (e) {
-    alert(e.message);
+    alert(e.message || 'Sign-in failed.');
   }
 }
 
@@ -308,10 +314,7 @@ export function initLibrary() {
   const loginWidget = document.getElementById('login-widget');
   document.getElementById('login-btn').addEventListener('click', (e) => {
     e.stopPropagation();
-    const open = loginWidget.classList.toggle('open');
-    if (open && document.getElementById('login-form').style.display !== 'none') {
-      setTimeout(() => document.getElementById('auth-email-input').focus(), 0);
-    }
+    loginWidget.classList.toggle('open');
   });
   loginWidget.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('click', () => loginWidget.classList.remove('open'));
@@ -319,12 +322,9 @@ export function initLibrary() {
     if (e.key === 'Escape') loginWidget.classList.remove('open');
   });
 
-  document.getElementById('auth-load-btn').addEventListener('click', loadLibraryForEmail);
-  document.getElementById('auth-email-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') loadLibraryForEmail();
-  });
-  document.getElementById('auth-logout-btn').addEventListener('click', () => {
-    PaperStore.clearEmail();
+  document.getElementById('google-signin-btn').addEventListener('click', signIn);
+  document.getElementById('auth-logout-btn').addEventListener('click', async () => {
+    await PaperStore.signOut();
     updateAuthBar(PaperStore.getSyncStatus());
     renderLibrary();
     renderReadLater();

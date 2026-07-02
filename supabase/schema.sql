@@ -1,7 +1,10 @@
--- Paper Reader — email-keyed schema (no Supabase Auth / magic links)
--- Run in Supabase SQL Editor. No Anonymous sign-ins required.
+-- Paper Reader — schema. IMPORTANT: since the Google sign-in change, the
+-- owner_email column carries the AUTHENTICATED SUPABASE USER ID (a UUID from
+-- Supabase Auth / Google OAuth), not an email. The column name is historical;
+-- no migration was run because pre-auth data was disposable (drop-and-rebuild).
+-- Optional cosmetic rename: supabase/migrate-to-user-id.sql. See docs/AUTH_SETUP.md.
 --
--- If you already ran the old auth.users schema, run migrate-to-email.sql instead.
+-- Run in Supabase SQL Editor.
 
 -- ── Tables ────────────────────────────────────────────────────────────────
 

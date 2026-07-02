@@ -56,11 +56,17 @@ The frontend always calls `/api/chat`, so local and prod are identical.
 - The API key is NEVER in the frontend. Keep it server-side only.
 
 ## Storage model
+- **Identity:** real Google sign-in via Supabase Auth (`signInWithOAuth`).
+ All data is scoped by the authenticated Supabase USER ID. Never hand-roll raw
+ Google OAuth; setup/invariants/gotchas live in `docs/AUTH_SETUP.md`.
 - **Supabase (primary when configured):** Postgres tables `documents`,
-  `discussions`, `messages`, `read_later`; PDFs in Storage bucket `pdfs`.
-  Keyed by `owner_email` — user enters email once, stored in `paperReader.email.v1`.
-- **Local backup:** `localStorage` key `paperReader.docs.v1` + IndexedDB
-  `paperReader.files`. One-time migration to Supabase via `store.js`.
+ `discussions`, `messages`, `read_later`, `ratings`; PDFs in Storage bucket
+ `pdfs`. The `owner_email` COLUMN carries the Supabase user id (historical
+ name; no migration — old email-keyed data was disposable and dropped).
+- **Local backup:** per-user namespaced keys `paperReader.docs.v2.<userId>` /
+ `paperReader.readLater.v2.<userId>` (signed-out uses `.local`) + IndexedDB
+ `paperReader.files.v2` with `<userId>::`-prefixed keys. Legacy v1 keys are
+ dropped once at init (guard flag `paperReader.authMigrated.v2`).
 - `persistCurrentDoc()` guard — do not remove; prevents history loss on tab-hide.
 
 ## Common tasks
