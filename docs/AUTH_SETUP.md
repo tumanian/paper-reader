@@ -93,10 +93,20 @@ the flow.
 
 - Console config (Google Cloud + Supabase dashboards): **done** (manually, as
   described above).
-- Auth feature implementation: **not yet landed** — the `auth-improvements`
-  branch is at the modularization merge (`7f54ec7`); the app still runs the old
-  email flow. The approved Phase A plan is the spec for Phase B implementation.
-- Verified on Vercel preview / production: **no** (Phase C pending; depends on
-  Phase B).
-- TODO: once implemented + verified, update this section with the commit SHA
-  and the preview/prod URL that was tested.
+- Auth feature implementation: **done** on branch `auth-improvements`
+  (identity layer `505ef6f`, UI + docs `3072090`). 137 unit tests green,
+  including 18 new auth tests (fake supabase-js client; real OAuth redirect is
+  not unit-testable).
+- Local verification: **partial** — signed-out gate/onboarding verified in the
+  browser on `http://localhost:3000`; clicking sign-in reaches the real Google
+  sign-in page with the correct client id, Supabase callback `redirect_uri`,
+  and `redirect_to=http://localhost:3000/`. Completing the flow needs a human
+  Google login (agent has no credentials).
+- Vercel preview: deployed from `3072090`
+  (`https://paper-reader-28jeao16q-tumanian-3316s-projects.vercel.app`) but the
+  project has Deployment Protection (Vercel SSO) on preview URLs, so it is not
+  reachable for automated checks. Also note: `*.vercel.app` is NOT in the
+  Supabase Redirect URLs allow-list, so OAuth on previews would bounce to the
+  Site URL — verify OAuth on localhost:3000 or production instead.
+- TODO: full end-to-end OAuth (sign in → library scoped to user id → sign out
+  → second account isolation) once a human completes the Google login.
