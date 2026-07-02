@@ -27,7 +27,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 // App modules in browser load order. The browser resolves the graph via
 // `import`; the vm shares one scope, so order only needs to satisfy top-level
 // (non-hoisted) execution — function declarations hoist across the bundle.
-const APP_MODULES = ['js/util.js', 'js/state.js', 'js/main.js'];
+const APP_MODULES = ['js/util.js', 'js/state.js', 'js/persistence.js', 'js/main.js'];
 
 // Strip ES-module syntax so the files can be concatenated into one vm script
 // sharing a single scope (function declarations hoist; cross-file references
@@ -37,9 +37,10 @@ const APP_MODULES = ['js/util.js', 'js/state.js', 'js/main.js'];
 // declarations / `export { ... }` lists.
 function stripModuleSyntax(src) {
   return src
-    // whole-line import statements (named / default / namespace / bare)
-    .replace(/^[ \t]*import\b[^\n]*?;[ \t]*$/gm, '')
-    .replace(/^[ \t]*import\s+['"][^'"]+['"];?[ \t]*$/gm, '')
+    // import ... from '...'; (single- or multi-line)
+    .replace(/^[ \t]*import\b[\s\S]*?\sfrom\s*['"][^'"]+['"]\s*;[ \t]*(?:\n|$)/gm, '')
+    // bare side-effect import: import '...';
+    .replace(/^[ \t]*import\s+['"][^'"]+['"]\s*;[ \t]*(?:\n|$)/gm, '')
     // whole-line `export { ... };` / `export { ... } from '...';`
     .replace(/^[ \t]*export\s*\{[^}]*\}\s*(from\s*['"][^'"]+['"])?;?[ \t]*$/gm, '')
     // `export ` prefix on declarations (function/const/let/var/class/async)
