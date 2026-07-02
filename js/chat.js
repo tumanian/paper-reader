@@ -195,7 +195,7 @@ function buildRatingRecord(d, msgIndex, rating, reason) {
     if (d.messages[i] && d.messages[i].role === 'user') { question = d.messages[i].content; break; }
   }
   let userId = null;
-  try { userId = PaperStore.getEmail?.() || null; } catch (_) {}
+  try { userId = PaperStore.getUserId?.() || null; } catch (_) {}
   return {
     id: ratingIdFor(d, msgIndex),
     schemaVersion: RATING_SCHEMA_VERSION,

@@ -1,18 +1,24 @@
-// Cloud + local persistence. Supabase stores data by owner_email — no magic links.
-// Enter your email once; it's saved in localStorage and reused on every visit.
+// Cloud + local persistence. Identity is a real Supabase Auth session (Google
+// OAuth via supabase.auth.signInWithOAuth); all data — cloud rows, local
+// caches, storage paths — is scoped by the authenticated Supabase user id.
+// NOTE: the Postgres column is still named owner_email but carries the user id
+// (disposable pre-auth data was dropped, no migration). See docs/AUTH_SETUP.md.
 window.PaperStore = (function () {
-  const STORE_KEY = 'paperReader.docs.v1';
-  const READ_LATER_KEY = 'paperReader.readLater.v1';
-  const EMAIL_KEY = 'paperReader.email.v1';
+  const STORE_BASE = 'paperReader.docs.v2';
+  const READ_LATER_BASE = 'paperReader.readLater.v2';
+  const MIGRATED_FLAG = 'paperReader.authMigrated.v2';
+  const IDB_NAME = 'paperReader.files.v2';
 
   let supabase = null;
-  let ownerEmail = null;
+  let identity = null;   // { id, email, name, avatar } from the Supabase session
+  let userId = null;     // identity.id — the scoping key everywhere
   let useCloud = false;
   let ready = false;
   let lastSyncError = null;
   let cloudRefreshPromise = null;
   let docs = {};
   let readLater = [];
+  let authSubscribed = false;
 
   function friendlyError(e) {
     const msg = e?.message || String(e);
@@ -44,41 +50,84 @@ window.PaperStore = (function () {
     notifyChange();
   }
 
-  function emailPathKey(email) {
-    return btoa(email.toLowerCase()).replace(/[^a-zA-Z0-9]/g, '').slice(0, 48);
+  // ── Identity helpers (pure) ─────────────────────────────────────────────
+  // Identity comes from the Supabase Auth session (Google OAuth). All data is
+  // scoped by the stable Supabase user id — see docs/AUTH_SETUP.md.
+
+  function identityFromSession(session) {
+    const u = session?.user;
+    if (!u || !u.id) return null;
+    const md = u.user_metadata || {};
+    return {
+      id: u.id,
+      email: u.email || md.email || null,
+      name: md.full_name || md.name || null,
+      avatar: md.avatar_url || md.picture || null,
+    };
   }
 
-  function getEmail() {
-    return ownerEmail || localStorage.getItem(EMAIL_KEY) || null;
+  // Per-user localStorage namespace. Signed-out (or cloud-less) sessions use a
+  // fixed 'local' namespace so local-only mode keeps full persistence.
+  function storageKeyForUser(base, uid) {
+    return base + '.' + (uid || 'local');
   }
 
-  function normalizeEmail(raw) {
-    const email = String(raw || '').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      throw new Error('Enter a valid email address.');
-    }
-    return email;
+  // Storage-bucket path segment for a user id (UUID → path-safe, stable).
+  function userPathKey(uid) {
+    return String(uid).replace(/[^a-zA-Z0-9]/g, '').slice(0, 48);
   }
 
-  // ── Local helpers ───────────────────────────────────────────────────────
+  // ── Legacy (email-era) data drop ────────────────────────────────────────
+  // The old email-keyed model stored GLOBAL keys. That content is disposable
+  // (per the auth migration decision: drop and rebuild, no migration). Runs
+  // once, guarded by MIGRATED_FLAG, so no orphaned v1 keys linger to confuse
+  // the new id-keyed reads.
+
+  function legacyKeysToClear() {
+    return [
+      'paperReader.docs.v1',
+      'paperReader.readLater.v1',
+      'paperReader.email.v1',
+      'paperReader.schema.v1',
+    ];
+  }
+
+  function dropLegacyData() {
+    try {
+      if (localStorage.getItem(MIGRATED_FLAG)) return false;
+      for (const k of legacyKeysToClear()) localStorage.removeItem(k);
+      try {
+        if ('indexedDB' in window && indexedDB.deleteDatabase) {
+          indexedDB.deleteDatabase('paperReader.files');
+        }
+      } catch (e) { console.warn('Legacy IndexedDB drop failed:', e); }
+      localStorage.setItem(MIGRATED_FLAG, JSON.stringify({ migratedAt: Date.now() }));
+      return true;
+    } catch { return false; }
+  }
+
+  // ── Local helpers (per-user namespaced) ─────────────────────────────────
+
+  function docsKey() { return storageKeyForUser(STORE_BASE, userId); }
+  function readLaterKey() { return storageKeyForUser(READ_LATER_BASE, userId); }
 
   function loadLocalDocs() {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; }
+    try { return JSON.parse(localStorage.getItem(docsKey())) || {}; }
     catch { return {}; }
   }
 
   function saveLocalDocs(store) {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); }
+    try { localStorage.setItem(docsKey(), JSON.stringify(store)); }
     catch (e) { console.warn('Local backup failed:', e); }
   }
 
   function loadLocalReadLater() {
-    try { return JSON.parse(localStorage.getItem(READ_LATER_KEY)) || []; }
+    try { return JSON.parse(localStorage.getItem(readLaterKey())) || []; }
     catch { return []; }
   }
 
   function saveLocalReadLater(items) {
-    try { localStorage.setItem(READ_LATER_KEY, JSON.stringify(items)); }
+    try { localStorage.setItem(readLaterKey(), JSON.stringify(items)); }
     catch (e) { console.warn('Read later local backup failed:', e); }
   }
 
@@ -103,7 +152,7 @@ window.PaperStore = (function () {
   function openLocalIDB() {
     return new Promise((resolve) => {
       if (!('indexedDB' in window)) { resolve(null); return; }
-      const req = indexedDB.open('paperReader.files', 1);
+      const req = indexedDB.open(IDB_NAME, 1);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('pdfs')) db.createObjectStore('pdfs');
@@ -113,12 +162,18 @@ window.PaperStore = (function () {
     });
   }
 
+  // IndexedDB keys are namespaced per user (same rule as localStorage) so PDFs
+  // and figures never leak across accounts on a shared device.
+  function idbKey(key) {
+    return (userId || 'local') + '::' + key;
+  }
+
   async function idbGetLocal(key) {
     const db = await openLocalIDB();
     if (!db) return null;
     return new Promise((res) => {
       const tx = db.transaction('pdfs', 'readonly');
-      const r = tx.objectStore('pdfs').get(key);
+      const r = tx.objectStore('pdfs').get(idbKey(key));
       r.onsuccess = () => res(r.result || null);
       r.onerror = () => res(null);
     });
@@ -127,7 +182,8 @@ window.PaperStore = (function () {
   function docToRow(doc) {
     return {
       id: doc.id,
-      owner_email: ownerEmail,
+      // Column name is historical; the value is the Supabase user id.
+      owner_email: userId,
       name: doc.name,
       mode: doc.mode,
       badge: doc.badge || null,
@@ -157,13 +213,13 @@ window.PaperStore = (function () {
   // ── Supabase load / save ──────────────────────────────────────────────
 
   async function loadFromCloud() {
-    if (!ownerEmail) return;
+    if (!userId) return;
 
     const [docRes, discRes, msgRes, rlRes] = await Promise.all([
-      supabase.from('documents').select('*').eq('owner_email', ownerEmail).order('updated_at', { ascending: false }),
-      supabase.from('discussions').select('*').eq('owner_email', ownerEmail),
-      supabase.from('messages').select('*').eq('owner_email', ownerEmail).order('sort_order', { ascending: true }),
-      supabase.from('read_later').select('*').eq('owner_email', ownerEmail).order('added_at', { ascending: false }),
+      supabase.from('documents').select('*').eq('owner_email', userId).order('updated_at', { ascending: false }),
+      supabase.from('discussions').select('*').eq('owner_email', userId),
+      supabase.from('messages').select('*').eq('owner_email', userId).order('sort_order', { ascending: true }),
+      supabase.from('read_later').select('*').eq('owner_email', userId).order('added_at', { ascending: false }),
     ]);
     if (docRes.error) throw docRes.error;
     if (discRes.error) throw discRes.error;
@@ -253,7 +309,7 @@ window.PaperStore = (function () {
       const { error: discErr } = await supabase.from('discussions').upsert({
         id: d.id,
         document_id: doc.id,
-        owner_email: ownerEmail,
+        owner_email: userId,
         txt: d.txt || '',
         mode: d.mode || doc.mode,
         page_num: d.pageNum ?? null,
@@ -266,7 +322,7 @@ window.PaperStore = (function () {
 
       const messages = (d.messages || []).map((m, i) => ({
         discussion_id: d.id,
-        owner_email: ownerEmail,
+        owner_email: userId,
         role: m.role === 'assistant' ? 'assistant' : 'user',
         content: m.content || '',
         hidden: !!m.hidden,
@@ -283,7 +339,7 @@ window.PaperStore = (function () {
   function ratingToRow(rec) {
     return {
       id: rec.id,
-      owner_email: ownerEmail,
+      owner_email: userId,
       rating: rec.rating,
       reason: rec.reason || null,
       selected_text: rec.selectedText || '',
@@ -335,7 +391,7 @@ window.PaperStore = (function () {
   // Local-first: the frontend always writes to its own IndexedDB; when cloud is
   // configured we also upsert here so ratings aggregate across devices.
   async function saveRating(rec) {
-    if (!useCloud || !ownerEmail) return;
+    if (!useCloud || !userId) return;
     try {
       const { error } = await supabase.from('ratings').upsert(ratingToRow(rec));
       if (error) throw error;
@@ -344,17 +400,17 @@ window.PaperStore = (function () {
   }
 
   async function deleteRating(id) {
-    if (!useCloud || !ownerEmail) return;
+    if (!useCloud || !userId) return;
     try {
-      const { error } = await supabase.from('ratings').delete().eq('id', id).eq('owner_email', ownerEmail);
+      const { error } = await supabase.from('ratings').delete().eq('id', id).eq('owner_email', userId);
       if (error) throw error;
     } catch (e) { setSyncError(e); throw e; }
   }
 
   async function getRatingsFromCloud() {
-    if (!useCloud || !ownerEmail) return [];
+    if (!useCloud || !userId) return [];
     const { data, error } = await supabase
-      .from('ratings').select('*').eq('owner_email', ownerEmail)
+      .from('ratings').select('*').eq('owner_email', userId)
       .order('updated_at', { ascending: false });
     if (error) throw error;
     return (data || []).map(rowToRating);
@@ -363,7 +419,7 @@ window.PaperStore = (function () {
   async function saveReadLaterToCloud(item) {
     const { error } = await supabase.from('read_later').upsert({
       id: item.id,
-      owner_email: ownerEmail,
+      owner_email: userId,
       title: item.title,
       url: item.url || null,
       mode: item.mode || null,
@@ -377,7 +433,7 @@ window.PaperStore = (function () {
   }
 
   async function syncAllToCloud() {
-    if (!useCloud || !ownerEmail) return true;
+    if (!useCloud || !userId) return true;
     let ok = true;
     for (const doc of Object.values(docs)) {
       try { await saveDocToCloud(doc); }
@@ -392,7 +448,8 @@ window.PaperStore = (function () {
   }
 
   async function refreshFromCloud() {
-    if (!useCloud || !ownerEmail || !supabase) return;
+    if (!useCloud || !userId || !supabase) return;
+    const refreshFor = userId;
 
     const localDocsSnapshot = loadLocalDocs();
     const localRlSnapshot = loadLocalReadLater();
@@ -400,8 +457,10 @@ window.PaperStore = (function () {
 
     try {
       await loadFromCloud();
+      if (userId !== refreshFor) return;
       cloudDocs = { ...docs };
     } catch (e) {
+      if (userId !== refreshFor) return;
       setSyncError(e);
       mergeLocalDocs();
       mergeLocalReadLater();
@@ -424,23 +483,27 @@ window.PaperStore = (function () {
     const cloudRlIds = new Set(readLater.map((i) => i.id));
     const rlToPush = localRlSnapshot.filter((i) => !cloudRlIds.has(i.id));
 
+    if (userId !== refreshFor) return;
     saveLocalDocs(docs);
     saveLocalReadLater(readLater);
 
     let ok = true;
     for (const doc of toPush) {
+      if (userId !== refreshFor) return;
       try { await saveDocToCloud(doc); }
       catch (e) { ok = false; setSyncError(e); }
     }
     for (const item of rlToPush) {
+      if (userId !== refreshFor) return;
       try { await saveReadLaterToCloud(item); }
       catch (e) { ok = false; setSyncError(e); }
     }
+    if (userId !== refreshFor) return;
     if (ok) setSyncError(null);
   }
 
   function startCloudRefresh() {
-    if (!useCloud || !ownerEmail || !supabase) return Promise.resolve();
+    if (!useCloud || !userId || !supabase) return Promise.resolve();
     if (cloudRefreshPromise) return cloudRefreshPromise;
     notifyChange();
     cloudRefreshPromise = refreshFromCloud()
@@ -455,12 +518,12 @@ window.PaperStore = (function () {
     const { error } = await supabase.from('documents').delete().eq('id', docId);
     if (error) throw error;
     try {
-      await supabase.storage.from('pdfs').remove([`${emailPathKey(ownerEmail)}/${docId}`]);
+      await supabase.storage.from('pdfs').remove([`${userPathKey(userId)}/${docId}`]);
     } catch (e) { console.warn('PDF delete:', e); }
   }
 
   async function putPdfToCloud(docId, blob) {
-    const path = `${emailPathKey(ownerEmail)}/${docId}`;
+    const path = `${userPathKey(userId)}/${docId}`;
     const { error } = await supabase.storage.from('pdfs').upload(path, blob, {
       upsert: true,
       contentType: 'application/pdf',
@@ -468,81 +531,150 @@ window.PaperStore = (function () {
     if (error) throw error;
   }
 
-  async function reloadForEmail() {
+  // ── Session / auth plumbing ─────────────────────────────────────────────
+
+  function applySession(session) {
+    identity = identityFromSession(session);
+    userId = identity ? identity.id : null;
+  }
+
+  function loadLocalState() {
+    // Cloud configured but signed out: no personal library (onboarding only).
+    // The `.local` namespace is for true local-only mode (!supabase).
+    if (supabase && !userId) {
+      docs = {};
+      readLater = [];
+      return;
+    }
     docs = loadLocalDocs();
     readLater = loadLocalReadLater();
-    return startCloudRefresh();
+  }
+
+  // After the OAuth redirect lands back on the app, supabase-js (PKCE +
+  // detectSessionInUrl) exchanges the ?code= itself; we just tidy the URL so a
+  // reload/bookmark is clean.
+  function cleanAuthParamsFromUrl() {
+    try {
+      const url = new URL(window.location.href);
+      let changed = false;
+      for (const p of ['code', 'state', 'error', 'error_code', 'error_description']) {
+        if (url.searchParams.has(p)) { url.searchParams.delete(p); changed = true; }
+      }
+      if (window.location.hash && /access_token|refresh_token|error/.test(window.location.hash)) {
+        url.hash = '';
+        changed = true;
+      }
+      if (changed && window.history && window.history.replaceState) {
+        window.history.replaceState(null, '', url.toString());
+      }
+    } catch (_) { /* URL cleanup is cosmetic — never fail init over it */ }
+  }
+
+  function subscribeToAuthChanges() {
+    if (authSubscribed || !supabase) return;
+    authSubscribed = true;
+    supabase.auth.onAuthStateChange((_event, session) => {
+      const prevUserId = userId;
+      applySession(session);
+      if (userId === prevUserId) { notifyChange(); return; }
+      useCloud = !!(supabase && userId);
+      loadLocalState();
+      notifyChange();
+      if (useCloud) startCloudRefresh();
+      if (typeof window.onPaperStoreAuthChange === 'function') {
+        window.onPaperStoreAuthChange();
+      }
+    });
   }
 
   // ── Public API ────────────────────────────────────────────────────────
 
   async function init() {
-    ownerEmail = getEmail();
-    docs = loadLocalDocs();
-    readLater = loadLocalReadLater();
+    dropLegacyData();
     ready = true;
 
     try {
       const r = await fetch('/api/config');
       const cfg = await r.json();
       if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
-        return { mode: 'local', email: ownerEmail };
+        supabase = null;
+        applySession(null);
+        useCloud = false;
+        loadLocalState();
+        return getSyncStatus();
       }
 
-      supabase = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+      supabase = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true,
+          flowType: 'pkce',
+        },
+      });
 
-      if (!ownerEmail) {
-        return { mode: 'cloud', needsEmail: true, email: null };
-      }
+      const { data } = await supabase.auth.getSession();
+      applySession(data && data.session ? data.session : null);
+      subscribeToAuthChanges();
+      cleanAuthParamsFromUrl();
 
-      useCloud = true;
-      startCloudRefresh();
+      useCloud = !!userId;
+      loadLocalState();
+      if (useCloud) startCloudRefresh();
       return getSyncStatus();
     } catch (e) {
       console.warn('Paper Reader: cloud init failed, falling back to local:', e);
       setSyncError(e);
       useCloud = false;
-      return { mode: 'local', error: friendlyError(e), email: ownerEmail };
+      loadLocalState();
+      return { mode: 'local', error: friendlyError(e), email: identity ? identity.email : null };
     }
   }
 
-  async function setEmail(raw) {
-    const email = normalizeEmail(raw);
-    localStorage.setItem(EMAIL_KEY, email);
-    ownerEmail = email;
-    useCloud = !!supabase;
-
-    if (!useCloud) {
-      return getSyncStatus();
-    }
-
-    docs = loadLocalDocs();
-    readLater = loadLocalReadLater();
-    notifyChange();
-    startCloudRefresh();
-    if (typeof window.onPaperStoreAuthChange === 'function') {
-      window.onPaperStoreAuthChange();
-    }
-    return getSyncStatus();
+  // Kicks off the Google OAuth redirect. The browser navigates away; the
+  // session is established by init() when we land back.
+  async function signInWithGoogle() {
+    if (!supabase) throw new Error('Cloud is not configured — sign-in unavailable.');
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin + window.location.pathname },
+    });
+    if (error) { setSyncError(error); throw error; }
+    return data;
   }
 
-  function clearEmail() {
-    localStorage.removeItem(EMAIL_KEY);
-    ownerEmail = null;
+  async function signOut() {
     if (supabase) {
-      docs = loadLocalDocs();
-      readLater = loadLocalReadLater();
-      return { mode: 'cloud', needsEmail: true };
+      try { await supabase.auth.signOut(); }
+      catch (e) { console.warn('Supabase signOut failed:', e); }
     }
+    // The SIGNED_OUT auth event normally clears state; do it directly too so
+    // signOut() is deterministic even if the event doesn't fire.
+    applySession(null);
+    useCloud = false;
+    loadLocalState();
+    notifyChange();
     return getSyncStatus();
   }
+
+  function getIdentity() { return identity; }
+
+  function getUserId() { return userId; }
+
+  function isSignedIn() { return !!userId; }
+
+  // Back-compat display accessor (identity email, not a scoping key).
+  function getEmail() { return identity ? identity.email : null; }
 
   function getSyncStatus() {
     return {
-      mode: useCloud ? 'cloud' : (supabase ? 'cloud' : 'local'),
-      useCloud: useCloud && !!ownerEmail,
-      email: ownerEmail,
-      needsEmail: supabase && !ownerEmail,
+      mode: supabase ? 'cloud' : 'local',
+      useCloud: useCloud && !!userId,
+      signedIn: !!userId,
+      identity,
+      userId,
+      email: identity ? identity.email : null,
+      needsAuth: !!supabase && !userId,
       syncing: !!cloudRefreshPromise,
       lastSyncError,
       docCount: Object.keys(docs).length,
@@ -553,12 +685,15 @@ window.PaperStore = (function () {
 
   function getReadLater() { return readLater; }
 
-  function isCloud() { return useCloud && !!ownerEmail; }
+  function isCloud() { return useCloud && !!userId; }
 
   async function saveDoc(doc) {
+    // Signed out with cloud configured: personal saves are a no-op (prevents
+    // logout/backToUpload races from leaking signed-in data into .local).
+    if (supabase && !userId) return;
     docs[doc.id] = doc;
     saveLocalDocs(docs);
-    if (!useCloud || !ownerEmail) return;
+    if (!useCloud || !userId) return;
     try {
       await saveDocToCloud(doc);
       setSyncError(null);
@@ -571,11 +706,11 @@ window.PaperStore = (function () {
   async function deleteDoc(docId) {
     delete docs[docId];
     saveLocalDocs(docs);
-    if (useCloud && ownerEmail) await deleteDocFromCloud(docId);
+    if (useCloud && userId) await deleteDocFromCloud(docId);
     const db = await openLocalIDB();
     if (db) {
       const tx = db.transaction('pdfs', 'readwrite');
-      tx.objectStore('pdfs').delete(docId);
+      tx.objectStore('pdfs').delete(idbKey(docId));
     }
     await deleteFiguresForDoc(docId);
   }
@@ -584,13 +719,26 @@ window.PaperStore = (function () {
     const ids = Object.keys(docs);
     docs = {};
     saveLocalDocs(docs);
-    if (useCloud && ownerEmail) {
+    if (useCloud && userId) {
       for (const id of ids) await deleteDocFromCloud(id);
     }
+    // Only clear THIS user's namespace — other accounts' blobs stay intact.
     const db = await openLocalIDB();
     if (db) {
-      const tx = db.transaction('pdfs', 'readwrite');
-      tx.objectStore('pdfs').clear();
+      const prefix = (userId || 'local') + '::';
+      await new Promise((res) => {
+        const tx = db.transaction('pdfs', 'readwrite');
+        const store = tx.objectStore('pdfs');
+        const req = store.getAllKeys ? store.getAllKeys() : null;
+        if (!req) { res(); return; }
+        req.onsuccess = () => {
+          for (const k of req.result || []) {
+            if (typeof k === 'string' && k.startsWith(prefix)) store.delete(k);
+          }
+        };
+        tx.oncomplete = () => res();
+        tx.onerror = () => res();
+      });
     }
   }
 
@@ -600,7 +748,7 @@ window.PaperStore = (function () {
     if (readLater.some((i) => i.id === id)) return false;
     readLater.unshift(entry);
     saveLocalReadLater(readLater);
-    if (useCloud && ownerEmail) {
+    if (useCloud && userId) {
       try {
         await saveReadLaterToCloud(entry);
         setSyncError(null);
@@ -615,16 +763,16 @@ window.PaperStore = (function () {
   async function removeReadLater(id) {
     readLater = readLater.filter((i) => i.id !== id);
     saveLocalReadLater(readLater);
-    if (useCloud && ownerEmail) {
-      await supabase.from('read_later').delete().eq('id', id).eq('owner_email', ownerEmail);
+    if (useCloud && userId) {
+      await supabase.from('read_later').delete().eq('id', id).eq('owner_email', userId);
     }
   }
 
   async function clearReadLater() {
     readLater = [];
     saveLocalReadLater(readLater);
-    if (useCloud && ownerEmail) {
-      await supabase.from('read_later').delete().eq('owner_email', ownerEmail);
+    if (useCloud && userId) {
+      await supabase.from('read_later').delete().eq('owner_email', userId);
     }
   }
 
@@ -633,12 +781,12 @@ window.PaperStore = (function () {
     if (db) {
       await new Promise((res) => {
         const tx = db.transaction('pdfs', 'readwrite');
-        tx.objectStore('pdfs').put(blob, docId);
+        tx.objectStore('pdfs').put(blob, idbKey(docId));
         tx.oncomplete = () => res();
         tx.onerror = () => res();
       });
     }
-    if (useCloud && ownerEmail) {
+    if (useCloud && userId) {
       try {
         await putPdfToCloud(docId, blob);
       } catch (e) {
@@ -649,8 +797,8 @@ window.PaperStore = (function () {
   }
 
   async function getPdf(docId) {
-    if (useCloud && ownerEmail) {
-      const path = `${emailPathKey(ownerEmail)}/${docId}`;
+    if (useCloud && userId) {
+      const path = `${userPathKey(userId)}/${docId}`;
       const { data, error } = await supabase.storage.from('pdfs').download(path);
       if (!error && data) return data;
     }
@@ -670,7 +818,7 @@ window.PaperStore = (function () {
     if (!db) return;
     await new Promise((res) => {
       const tx = db.transaction('pdfs', 'readwrite');
-      tx.objectStore('pdfs').put(record, key);
+      tx.objectStore('pdfs').put(record, idbKey(key));
       tx.oncomplete = () => res();
       tx.onerror = () => res();
     });
@@ -685,7 +833,7 @@ window.PaperStore = (function () {
   async function deleteFiguresForDoc(docId) {
     const db = await openLocalIDB();
     if (!db) return;
-    const prefix = `fig::${docId}::`;
+    const prefix = idbKey(`fig::${docId}::`);
     await new Promise((res) => {
       const tx = db.transaction('pdfs', 'readwrite');
       const store = tx.objectStore('pdfs');
@@ -705,9 +853,12 @@ window.PaperStore = (function () {
     init,
     ready,
     isCloud,
+    signInWithGoogle,
+    signOut,
+    getIdentity,
+    getUserId,
+    isSignedIn,
     getEmail,
-    setEmail,
-    clearEmail,
     getStore,
     getReadLater,
     getSyncStatus,
@@ -727,5 +878,8 @@ window.PaperStore = (function () {
     deleteFiguresForDoc,
     syncAllToCloud,
     getClient: () => supabase,
+    // Pure helpers exposed for unit tests (no app behaviour depends on these
+    // being public).
+    _internals: { identityFromSession, storageKeyForUser, userPathKey, legacyKeysToClear, dropLegacyData },
   };
 })();

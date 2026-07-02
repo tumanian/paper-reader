@@ -215,7 +215,97 @@ function makeIndexedDB() {
     };
   }
 
-  return { open };
+  return {
+    open,
+    deleteDatabase(name) {
+      const req = { onsuccess: null, onerror: null };
+      queueMicrotask(() => {
+        databases.delete(name);
+        if (typeof req.onsuccess === 'function') req.onsuccess({ target: req });
+      });
+      return req;
+    },
+    _databases: databases,
+  };
+}
+
+// ── Fake Supabase client ─────────────────────────────────────────────────────
+// Just enough of supabase-js v2 for store.js: auth (getSession /
+// onAuthStateChange / signInWithOAuth / signOut), chainable-thenable table
+// queries that record what was asked and resolve { data, error }, and a
+// storage stub. Tests drive sessions via setSession()/emitAuthChange() and
+// assert against state.calls.
+function makeFakeSupabase() {
+  const state = {
+    session: null,
+    createClientArgs: null,
+    authChangeCallbacks: [],
+    calls: { signInWithOAuth: [], signOut: 0, queries: [] },
+    // Optional per-table select results: { [table]: rows }
+    selectResults: {},
+  };
+
+  function chain(table) {
+    const q = { table, op: 'select', filters: [], rows: null };
+    const result = () => {
+      state.calls.queries.push(q);
+      const data = q.op === 'select' ? (state.selectResults[table] || []) : null;
+      return { data, error: null };
+    };
+    const c = {
+      select() { q.op = 'select'; return c; },
+      insert(rows) { q.op = 'insert'; q.rows = rows; return c; },
+      upsert(rows) { q.op = 'upsert'; q.rows = rows; return c; },
+      delete() { q.op = 'delete'; return c; },
+      eq(col, val) { q.filters.push([col, val]); return c; },
+      order() { return c; },
+      then(res, rej) { return Promise.resolve(result()).then(res, rej); },
+    };
+    return c;
+  }
+
+  const client = {
+    auth: {
+      async getSession() { return { data: { session: state.session }, error: null }; },
+      onAuthStateChange(cb) {
+        state.authChangeCallbacks.push(cb);
+        return { data: { subscription: { unsubscribe() {} } } };
+      },
+      async signInWithOAuth(opts) {
+        state.calls.signInWithOAuth.push(opts);
+        return { data: { url: 'https://accounts.google.com/o/oauth2/auth' }, error: null };
+      },
+      async signOut() {
+        state.calls.signOut++;
+        state.session = null;
+        for (const cb of state.authChangeCallbacks) cb('SIGNED_OUT', null);
+        return { error: null };
+      },
+    },
+    from: (table) => chain(table),
+    storage: {
+      from: () => ({
+        async upload() { return { error: null }; },
+        async download() { return { data: null, error: { message: 'not found' } }; },
+        async remove() { return { error: null }; },
+      }),
+    },
+  };
+
+  return {
+    client,
+    state,
+    setSession(session) { state.session = session; },
+    emitAuthChange(event, session) {
+      state.session = session;
+      for (const cb of state.authChangeCallbacks) cb(event, session);
+    },
+    clearCalls() {
+      state.calls.signInWithOAuth.length = 0;
+      state.calls.signOut = 0;
+      state.calls.queries.length = 0;
+    },
+  };
 }
 
 // ── Response / fetch helpers ────────────────────────────────────────────────
@@ -239,6 +329,7 @@ function buildSandbox({ onboardingJson } = {}) {
   const localStorage = makeLocalStorage();
   const indexedDB = makeIndexedDB();
   const document = makeDocument();
+  const fakeSupabase = makeFakeSupabase();
   const fetchCalls = [];
   let fetchHandler = null;
 
@@ -285,7 +376,11 @@ function buildSandbox({ onboardingJson } = {}) {
     indexedDB,
     document,
     navigator: { platform: '', userAgent: 'node-test' },
-    location: { href: 'http://localhost/', hostname: 'localhost' },
+    location: { href: 'http://localhost/', hostname: 'localhost', origin: 'http://localhost', pathname: '/', hash: '', search: '' },
+    history: { replaceState() {} },
+    // CDN supabase-js global; store.js only touches it when /api/config
+    // returns a url+key (tests opt in via setFetchHandler).
+    supabase: { createClient(url, key, opts) { fakeSupabase.state.createClientArgs = { url, key, opts }; return fakeSupabase.client; } },
     requestAnimationFrame: (fn) => unrefTimeout(() => fn(Date.now()), 0),
     cancelAnimationFrame: () => {},
     MutationObserver: class { observe() {} disconnect() {} },
@@ -310,6 +405,7 @@ function buildSandbox({ onboardingJson } = {}) {
       localStorage,
       indexedDB,
       document,
+      fakeSupabase,
       fetchCalls,
       jsonResponse,
       setFetchHandler(fn) { fetchHandler = fn; },
@@ -318,4 +414,4 @@ function buildSandbox({ onboardingJson } = {}) {
   };
 }
 
-module.exports = { buildSandbox, makeEl, makeDocument, makeLocalStorage, makeIndexedDB, jsonResponse };
+module.exports = { buildSandbox, makeEl, makeDocument, makeLocalStorage, makeIndexedDB, makeFakeSupabase, jsonResponse };

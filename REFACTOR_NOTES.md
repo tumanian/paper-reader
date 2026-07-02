@@ -1,5 +1,8 @@
 # index.html modularization — working notes
 
+> Auth/identity work: see `docs/AUTH_SETUP.md` for the Google OAuth / Supabase
+> Auth setup, console config, redirect-URL invariants, and current status.
+
 > Continuity note so this refactor can resume cleanly if context is lost.
 > Branch: `modularization`. Last updated: Phase 3 COMPLETE (js/onboarding.js extracted; main.js is now a 133-line entry/wiring module). All 13 modules split, 119 green incl. native-ESM graph guard. Nothing left to extract; remaining work is optional polish + merge.
 >

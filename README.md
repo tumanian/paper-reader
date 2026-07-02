@@ -20,10 +20,11 @@ powers highlight chat and citation fallbacks.
 ## Supabase setup (cloud persistence)
 
 1. Create a project at [supabase.com](https://supabase.com)
-2. **SQL Editor** → run the contents of `supabase/schema.sql`  
-   (If you already ran the old auth-based schema, run `supabase/migrate-to-email.sql` instead.)
+2. **SQL Editor** → run the contents of `supabase/schema.sql`
 3. **Storage** → create a private bucket named `pdfs`
-4. Copy **Project URL** and **anon public key** from Settings → API
+4. **Authentication** → enable the Google provider and configure redirect URLs
+   (full walkthrough incl. Google Cloud Console setup: `docs/AUTH_SETUP.md`)
+5. Copy **Project URL** and **anon public key** from Settings → API
 
 Add to your environment:
 
@@ -32,10 +33,10 @@ SUPABASE_URL=https://xxxx.supabase.co
 SUPABASE_ANON_KEY=eyJhbG...
 ```
 
-Enter your email once on the upload screen — it's saved in the browser and reused
-on every visit. Your library, chats, and PDFs load from Supabase filtered by that
-email. Use the same email on another device to see the same data. No magic links
-or sign-in emails.
+Sign in with Google on the upload screen. Your library, chats, and PDFs are
+scoped to your Supabase user id and load on any device where you sign in with
+the same Google account. The Google client secret lives in Supabase — only the
+anon key is ever client-side.
 
 ---
 
