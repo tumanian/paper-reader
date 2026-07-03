@@ -119,12 +119,17 @@ export function renderReadLater() {
     const card = document.createElement('div');
     card.className = 'lib-card rl-card';
     const canOpen = !!(item.url || item.docId);
+    const sourceBits = [];
+    if (item.sourceDoc) sourceBits.push(`from ${esc(item.sourceDoc)}`);
+    if (item.citationText) {
+      const c = item.citationText.trim();
+      sourceBits.push(esc(c.slice(0, 60)) + (c.length > 60 ? '…' : ''));
+    }
     card.innerHTML = `
       <div class="lib-icon">${item.url ? '🔗' : (item.docId ? '📄' : '📌')}</div>
       <div class="lib-info">
         <div class="lib-name">${esc(item.title)}</div>
-        ${item.sourceDoc ? `<div class="rl-source">from ${esc(item.sourceDoc)}</div>` : ''}
-        ${item.citationText ? `<div class="lib-summary">${esc(item.citationText.slice(0, 120))}${item.citationText.length > 120 ? '…' : ''}</div>` : ''}
+        ${sourceBits.length ? `<div class="rl-source">${sourceBits.join(' · ')}</div>` : ''}
         ${!canOpen ? '<div class="rl-unresolved">No URL — open source paper to resolve</div>' : ''}
         <div class="lib-meta">${timeAgo(item.addedAt)}</div>
       </div>
