@@ -188,14 +188,6 @@ async function deleteRatingRecord(id) {
   catch (e) { console.warn('[Rating] cloud delete failed:', e.message); }
   return true;
 }
-async function getAllRatingRecords() {
-  const store = await ratingsTx('readonly'); if (!store) return [];
-  return new Promise((res) => {
-    const r = store.getAll ? store.getAll() : null;
-    if (r) { r.onsuccess = () => res(r.result || []); r.onerror = () => res([]); return; }
-    res([]);
-  });
-}
 
 function ratingIdFor(d, msgIndex) {
   return `${currentDocId || 'nodoc'}::${d.id}::m${msgIndex}`;
@@ -300,32 +292,6 @@ function renderRatingControl(msgDiv, d, msgIndex) {
     await putRatingRecord(current);
     paint(current);
   });
-}
-
-async function exportRatings() {
-  const local = await getAllRatingRecords();
-  let cloud = [];
-  try { cloud = await PaperStore.getRatingsFromCloud?.() || []; }
-  catch (e) { console.warn('[Rating] cloud fetch for export failed; exporting local only:', e.message); }
-  // Merge by id, preferring the most recently updated copy.
-  const byId = new Map();
-  for (const rec of [...local, ...cloud]) {
-    const prev = byId.get(rec.id);
-    if (!prev || (rec.updatedAt || 0) >= (prev.updatedAt || 0)) byId.set(rec.id, rec);
-  }
-  const records = [...byId.values()];
-  const btn = document.getElementById('export-ratings-btn');
-  if (!records.length) {
-    if (btn) { const t = btn.textContent; btn.textContent = 'No rated responses yet'; setTimeout(() => { btn.textContent = t; }, 1600); }
-    return;
-  }
-  const blob = new Blob([JSON.stringify(records, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `paper-reader-ratings-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function rebuildChat(d) {
@@ -607,7 +573,6 @@ export async function callClaude(system, messages) {
 // Wire up chat DOM listeners. Called once from boot().
 export function initChat() {
   document.getElementById('back-btn').addEventListener('click', showList);
-  document.getElementById('export-ratings-btn')?.addEventListener('click', exportRatings);
   document.getElementById('send-btn').addEventListener('click', sendMessage);
   document.getElementById('msg-input').addEventListener('keydown', e => {
     if (e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}
