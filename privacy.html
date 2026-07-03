@@ -41,7 +41,7 @@
 
   <p>This Privacy Policy explains how <strong>Paper Reader</strong> ("we", "us", the "Service"), operated by <strong>Gurgen Tumanyan</strong>, handles information when you use the app at <strong>paper-reader.dev</strong>.</p>
 
-  <div class="note">Plain-language summary: You sign in with Google so your library can sync. The papers you open, the text you highlight, and your conversations are stored in our database so you can return to them, and relevant excerpts are sent to Anthropic's Claude to generate responses. We do not sell your data or use it for advertising.</div>
+  <div class="note">Plain-language summary: You can use Paper Reader with or without a Google account. If you sign in, your library syncs across devices and is stored in our database (Supabase) so you can return to it. Without an account, your data stays in your browser and is not stored on our servers. Either way, when you ask about a highlight the selected text and relevant excerpts of the paper are sent to Anthropic's Claude to generate a response. We do not sell your data or use it for advertising.</div>
 
   <h2>Information we collect</h2>
   <ul>
@@ -49,6 +49,9 @@
     <li><strong>Content you create.</strong> Papers you open or upload (including PDF files), web/arXiv links you load, text you highlight, your chat messages and discussions, "read later" items, and thumbs up/down feedback on responses.</li>
     <li><strong>Technical data.</strong> Standard information required to operate the Service, such as request logs and error diagnostics handled by our hosting and infrastructure providers.</li>
   </ul>
+
+  <h2>Using Paper Reader without an account</h2>
+  <p>You can use Paper Reader without signing in (for example, to try the annotated example paper). In that case, no account is created and we do not store your data on our servers (Supabase) — it stays in your browser: PDFs you open and your reading list are cached locally in your browser (via local storage and IndexedDB), and your highlights and discussions remain within your current browser session. Even without an account, some information still leaves your browser so the features can work: when you ask a question about a highlight, the selected text and relevant excerpts of the paper are sent to Anthropic to generate a response; when you open a paper by URL, that URL is passed to our fetch service and the third-party proxy services described below; and matching a citation may send the citation's title, DOI, or arXiv identifier to external metadata services (Crossref and arXiv). Signing in with Google is optional — it adds cross-device sync and stores your library on our servers (Supabase).</p>
 
   <h2>How we use information</h2>
   <ul>
@@ -67,8 +70,9 @@
     <li><strong>Google</strong> — sign-in (OAuth). See the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a>.</li>
     <li><strong>Supabase</strong> — authentication, database, and file storage for your library. See the <a href="https://supabase.com/privacy" target="_blank" rel="noopener">Supabase Privacy Policy</a>.</li>
     <li><strong>Anthropic</strong> — AI responses, as described above.</li>
-    <li><strong>Public CORS proxies</strong> (e.g. allorigins.win, corsproxy.io) — used only to fetch the text of public web articles you choose to load. The URL you enter is passed to these services to retrieve the page.</li>
-    <li><strong>Vercel</strong> — application hosting.</li>
+    <li><strong>Public CORS proxies</strong> (e.g. allorigins.win, corsproxy.io) — used as a fallback to fetch the text of public web articles you choose to load. The URL you enter is passed to these services to retrieve the page.</li>
+    <li><strong>Crossref and arXiv</strong> — public academic metadata services queried to resolve citations and load arXiv papers. When you view a citation or open an arXiv link, the relevant title, DOI, or arXiv identifier is sent to these services.</li>
+    <li><strong>Vercel</strong> — application hosting and the stateless server functions that proxy requests to Anthropic and fetch papers.</li>
   </ul>
 
   <h2>Data stored on your device</h2>
