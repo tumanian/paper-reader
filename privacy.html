@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy · Paper Reader</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #ece7dd; color: #2b2926; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 56px 24px 96px; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 40px; text-decoration: none; }
+  .brand svg { color: #c1603d; }
+  .brand span { font-family: Georgia, "Times New Roman", serif; font-size: 20px; font-weight: 700; color: #2b2926; }
+  .brand span .dot { color: #c1603d; }
+  h1 { font-family: Georgia, "Times New Roman", serif; font-size: 34px; font-weight: 700; letter-spacing: -.01em; margin-bottom: 6px; }
+  .updated { color: #8c8272; font-size: 14px; margin-bottom: 36px; }
+  h2 { font-family: Georgia, "Times New Roman", serif; font-size: 21px; font-weight: 700; margin: 34px 0 12px; }
+  p, li { font-size: 16px; color: #3a3733; margin-bottom: 12px; }
+  ul { padding-left: 22px; }
+  li { margin-bottom: 8px; }
+  a { color: #c1603d; }
+  strong { color: #2b2926; }
+  .note { background: #fdfaf5; border: 1px solid #e7d3c2; border-radius: 12px; padding: 16px 18px; font-size: 14.5px; color: #6a6258; margin: 28px 0; }
+  footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid #dcd6ca; font-size: 14px; color: #8c8272; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="brand" href="/">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+    <span>Paper Reader<span class="dot">.</span></span>
+  </a>
+
+  <h1>Privacy Policy</h1>
+  <div class="updated">Last updated: July 3, 2026</div>
+
+  <p>This Privacy Policy explains how <strong>Paper Reader</strong> ("we", "us", the "Service"), operated by <strong>Gurgen Tumanyan</strong>, handles information when you use the app at <strong>paper-reader.dev</strong>.</p>
+
+  <div class="note">Plain-language summary: You sign in with Google so your library can sync. The papers you open, the text you highlight, and your conversations are stored in our database so you can return to them, and relevant excerpts are sent to Anthropic's Claude to generate responses. We do not sell your data or use it for advertising.</div>
+
+  <h2>Information we collect</h2>
+  <ul>
+    <li><strong>Account information.</strong> When you sign in with Google, we receive your email address, name, and profile photo from your Google account (via Supabase Authentication). We do not receive your Google password.</li>
+    <li><strong>Content you create.</strong> Papers you open or upload (including PDF files), web/arXiv links you load, text you highlight, your chat messages and discussions, "read later" items, and thumbs up/down feedback on responses.</li>
+    <li><strong>Technical data.</strong> Standard information required to operate the Service, such as request logs and error diagnostics handled by our hosting and infrastructure providers.</li>
+  </ul>
+
+  <h2>How we use information</h2>
+  <ul>
+    <li>To authenticate you and sync your library across your devices.</li>
+    <li>To store your papers, highlights, discussions, and feedback so they persist between sessions.</li>
+    <li>To generate explanations, summaries, citation matches, and chat responses by sending the relevant paper text and your messages to our AI provider.</li>
+    <li>To operate, maintain, debug, and improve the Service.</li>
+  </ul>
+
+  <h2>How your content is processed by AI</h2>
+  <p>When you highlight text or chat, the selected passage and relevant portions of the paper are sent to <strong>Anthropic</strong> (the Claude API) through our server, which returns a response. Your Anthropic-processed content is subject to <a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noopener">Anthropic's Privacy Policy</a>. We do not use your content to train models.</p>
+
+  <h2>Third-party services</h2>
+  <p>We rely on the following providers to deliver the Service:</p>
+  <ul>
+    <li><strong>Google</strong> — sign-in (OAuth). See the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a>.</li>
+    <li><strong>Supabase</strong> — authentication, database, and file storage for your library. See the <a href="https://supabase.com/privacy" target="_blank" rel="noopener">Supabase Privacy Policy</a>.</li>
+    <li><strong>Anthropic</strong> — AI responses, as described above.</li>
+    <li><strong>Public CORS proxies</strong> (e.g. allorigins.win, corsproxy.io) — used only to fetch the text of public web articles you choose to load. The URL you enter is passed to these services to retrieve the page.</li>
+    <li><strong>Vercel</strong> — application hosting.</li>
+  </ul>
+
+  <h2>Data stored on your device</h2>
+  <p>The Service also keeps a local copy of your library in your browser (via <code>localStorage</code> and IndexedDB) so it works quickly and offline. You can clear this at any time using the "Clear all" control or your browser's site-data settings.</p>
+
+  <h2>Data retention</h2>
+  <p>We keep your content while your account is active. You can delete individual papers and discussions in the app, or request deletion of your account and associated data by contacting us.</p>
+
+  <h2>Your rights</h2>
+  <p>Depending on your location, you may have the right to access, correct, export, or delete your personal data. To exercise these rights, contact us at <a href="mailto:tumanian@gmail.com">tumanian@gmail.com</a>.</p>
+
+  <h2>Children</h2>
+  <p>The Service is not directed to children under 13, and we do not knowingly collect their personal information.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>We may update this policy from time to time. Material changes will be reflected by updating the "Last updated" date above.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy? Email <a href="mailto:tumanian@gmail.com">tumanian@gmail.com</a>.</p>
+
+  <footer>
+    <a href="/">← Back to Paper Reader</a> · <a href="terms.html">Terms of Service</a>
+  </footer>
+</div>
+</body>
+</html>
