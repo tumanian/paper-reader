@@ -15,6 +15,13 @@ export function setFigureHooks({ openChat, paintHighlight } = {}) {
   if (paintHighlight) _figPaintHighlight = paintHighlight;
 }
 
+// TEMPORARY KILL-SWITCH: figure capture is disabled in production while a
+// capture bug is investigated. Flip back to true to re-enable. The code below
+// is kept intact — only the user-facing entry points (top-bar hint, keyboard
+// shortcut, arming, and the onboarding demo) are gated so users don't hit the
+// broken flow. Reading/rendering previously-captured figures stays enabled.
+export const FIGURE_CAPTURE_ENABLED = false;
+
 const IS_MAC = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
 const FIGURE_MOD_LABEL = IS_MAC ? '⌘⇧F' : 'Ctrl⇧F';
 
@@ -41,6 +48,7 @@ function isFigureCaptureAvailable() {
 }
 
 export function armFigureCapture() {
+  if (!FIGURE_CAPTURE_ENABLED) return;
   if (captureArmed || !isFigureCaptureAvailable()) return;
   captureArmed = true;
   hidePopover();
@@ -414,6 +422,12 @@ export function renderChatFigure(box, d) {
 }
 
 export function initFigure() {
+  // Disabled: hide the affordance and skip wiring the shortcut/click entirely.
+  if (!FIGURE_CAPTURE_ENABLED) {
+    const hintEl = document.getElementById('figure-hint');
+    if (hintEl) hintEl.style.display = 'none';
+    return;
+  }
   // Shortcut + hint affordance. Toggle arm on ⌘⇧F (Ctrl⇧F elsewhere); Esc cancels.
   document.addEventListener('keydown', (e) => {
     const mod = IS_MAC ? e.metaKey : e.ctrlKey;

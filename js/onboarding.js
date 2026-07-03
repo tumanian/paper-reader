@@ -14,7 +14,7 @@ import { parseCitation, parseParentheticalAuthorYear } from './citation-parse.js
 import { loadWebPage } from './web-loader.js';
 import { loadCitationPreview, seedOnboardingCitationCache } from './citation-resolve.js';
 import { positionPopover } from './selection.js';
-import { armFigureCapture, figureToast } from './figure.js';
+import { armFigureCapture, figureToast, FIGURE_CAPTURE_ENABLED } from './figure.js';
 import { openChat, sendMessage, paintHighlight, renderList, playOnboardingCachedChat } from './chat.js';
 
 // Onboarding demo highlights auto-run the feature they advertise on first click,
@@ -27,6 +27,7 @@ export function runOnboardingDemo(d) {
   // Figure can't be auto-run (it needs a real drag) — clicking the teaching
   // highlight arms the one-shot capture so the user performs the gesture.
   if (d.feature === 'figure') {
+    if (!FIGURE_CAPTURE_ENABLED) return false;
     armFigureCapture();
     figureToast('Drag a box around the figure above to capture it.');
     return true;
@@ -311,6 +312,8 @@ function applyOnboardingItems(items) {
     for (const item of remaining) {
       try {
         if (!item || typeof item.snippet !== 'string' || isTodoValue(item.snippet)) continue;
+        // Figure capture is disabled — don't paint its teaching highlight.
+        if (item.feature === 'figure' && !FIGURE_CAPTURE_ENABLED) continue;
         const range = locateTextRange(body, item.snippet);
         const relRects = range ? rectsForRange(range, aw) : [];
         if (!relRects.length) { stillMissing.push(item); continue; }
