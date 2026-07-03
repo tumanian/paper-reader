@@ -61,7 +61,12 @@ export function resolveReferenceEntry(entryText) {
   const url = entry.match(/https?:\/\/[^\s\]\),]+/i);
   if (url) return { url: url[0].replace(/[.,;]+$/, ''), label: entry.slice(0, 140), refText: entry };
 
-  const arxiv = entry.match(/arxiv[:\s]*(?:\/abs\/)?([\d.]+(?:v\d+)?)/i);
+  // arXiv IDs appear a few ways: "arXiv:1412.3555", "arXiv:1412.3555v2",
+  // old-style "arXiv:cs/0123456", and the CoRR form "CoRR, abs/1412.3555"
+  // (no "arXiv" token at all). An arXiv id is either NNNN.NNNNN or category/NNNNNNN.
+  const ARXIV_ID = '(?:\\d{4}\\.\\d{4,5}|[a-z-]+\\/\\d{7})(?:v\\d+)?';
+  const arxiv = entry.match(new RegExp(`arxiv[:\\s]*(?:\\/?abs\\/)?(${ARXIV_ID})`, 'i'))
+             || entry.match(new RegExp(`\\babs\\/(${ARXIV_ID})`, 'i'));
   if (arxiv) return { url: `https://arxiv.org/abs/${arxiv[1]}`, label: entry.slice(0, 140), refText: entry };
 
   const doi = entry.match(/(?:doi[:\s]*)?(10\.\d{4,9}\/[^\s\]\),]+)/i);
