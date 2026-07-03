@@ -84,8 +84,14 @@ let activeOnboardingPaperId = null;
 // MutationObserver + safety timer). Called when a new paper starts loading so
 // a stale observer can't fire against the next paper's DOM.
 let _onboardingCancel = null;
-export function cancelOnboardingPlacement() {
+// Tear down the observer/timer only. Does NOT clear activeOnboardingPaperId —
+// applyOnboardingItems restarts placement for the SAME paper and the demo
+// chat cache is keyed by that id (nulling it here broke cached math/code demos).
+function stopOnboardingPlacement() {
   if (_onboardingCancel) { try { _onboardingCancel(); } catch (_) {} _onboardingCancel = null; }
+}
+export function cancelOnboardingPlacement() {
+  stopOnboardingPlacement();
   activeOnboardingPaperId = null;
 }
 let pendingOnboarding = null;
@@ -267,6 +273,38 @@ function rectsForRange(range, wrapperEl) {
     .map((r) => ({ left: r.left - wrap.left, top: r.top - wrap.top, width: r.width, height: r.height }));
 }
 
+// Formula snippets anchor on the prose right before an equation (MathML isn't
+// text-locatable), so the highlight would visually miss the math. Find the
+// display-equation element that follows the anchor and include its rect.
+const EQUATION_SELECTOR = '.ltx_equation, .ltx_equationgroup, .ltx_eqn_table, math[display="block"], mjx-container[display="true"], .MathJax_Display, .katex-display';
+function findEquationAfter(range) {
+  let el = range.endContainer.nodeType === 3 ? range.endContainer.parentElement : range.endContainer;
+  // Climb out of inline elements to the enclosing block first.
+  while (el && el !== document.body && getComputedStyle(el).display === 'inline') el = el.parentElement;
+  for (let hops = 0; el && hops < 6; hops++) {
+    let sib = el.nextElementSibling;
+    for (let i = 0; sib && i < 4; i++, sib = sib.nextElementSibling) {
+      if (sib.matches?.(EQUATION_SELECTOR)) return sib;
+      const inner = sib.querySelector?.(EQUATION_SELECTOR);
+      if (inner) return inner;
+    }
+    el = el.parentElement; // anchor may sit deep inside the paragraph
+  }
+  return null;
+}
+
+// The demo auto-run leaves exactly one canned user/assistant pair behind; any
+// other messages mean the visitor actually engaged with the thread.
+const DEMO_PROMPTS = ['Explain this math.', 'Translate this formula to code.'];
+function isUntouchedOnboardingDemo(d) {
+  if (!d.onboarding) return false;
+  const msgs = d.messages || [];
+  if (msgs.length === 0) return true;
+  return msgs.length === 2
+    && msgs[0].role === 'user' && DEMO_PROMPTS.includes(msgs[0].content)
+    && msgs[1].role === 'assistant';
+}
+
 // Paint precomputed highlights for the just-opened onboarding paper. Reuses the
 // normal discussion + paintHighlight path; skips unmatched snippets silently.
 export function maybeApplyOnboardingCuration() {
@@ -279,10 +317,11 @@ export function maybeApplyOnboardingCuration() {
   activeOnboardingPaperId = paper.paperId || null;
   applyOnboardingActionCache(activeOnboardingPaperId);
   if (discussions.length > 0) {
-    // Reopened. If the visitor never engaged (every highlight is an untouched
-    // onboarding demo), refresh from the latest curation so edits/new feature
-    // demos show up. If they have a real discussion going, leave it alone.
-    const refreshable = discussions.every(d => d.onboarding && (!d.messages || d.messages.length === 0));
+    // Reopened. If the visitor never engaged (every highlight is an onboarding
+    // demo that's untouched, or holds only the auto-played demo exchange),
+    // refresh from the latest curation so fixes/new demos replace stale
+    // highlights. If they have a real discussion going, leave it alone.
+    const refreshable = discussions.every(isUntouchedOnboardingDemo);
     if (!refreshable) return;
     const layer = document.getElementById('article-wrapper')?.querySelector('.highlights-layer');
     if (layer) layer.innerHTML = '';
@@ -298,7 +337,7 @@ export function maybeApplyOnboardingCuration() {
 // mutation (debounced) until everything places or a 20s safety deadline hits.
 // Unmatched snippets are skipped silently — partial success is fine.
 function applyOnboardingItems(items) {
-  cancelOnboardingPlacement();
+  stopOnboardingPlacement();
   const startedAt = Date.now();
   let remaining = items.slice();
   let observer = null, debounce = null, finished = false;
@@ -318,6 +357,18 @@ function applyOnboardingItems(items) {
         const relRects = range ? rectsForRange(range, aw) : [];
         if (!relRects.length) { stillMissing.push(item); continue; }
         const feature = ['math', 'code', 'citation', 'discuss', 'figure'].includes(item.feature) ? item.feature : 'discuss';
+        // Math/code snippets anchor on prose next to the equation — extend the
+        // highlight to cover the equation itself so the selection looks right.
+        if (feature === 'math' || feature === 'code') {
+          const eq = findEquationAfter(range);
+          if (eq) {
+            const wrap = aw.getBoundingClientRect();
+            const r = eq.getBoundingClientRect();
+            if (r.width > 1 && r.height > 1) {
+              relRects.push({ left: r.left - wrap.left, top: r.top - wrap.top, width: r.width, height: r.height });
+            }
+          }
+        }
         const d = {
           id: Date.now() + discussions.length + Math.floor(Math.random() * 1000),
           txt: normalizeForMatch(range.toString()),
@@ -325,6 +376,10 @@ function applyOnboardingItems(items) {
           relRects, messages: [],
           note: item.note || null, onboarding: true,
           feature, tex: item.tex || null, cite: item.cite || null,
+          // Stamp math metadata at placement (not first click) so the formula
+          // is persisted with the discussion from the start.
+          mathKind: feature === 'math' ? 'explain' : (feature === 'code' ? 'code' : null),
+          mathTex: (feature === 'math' || feature === 'code') ? (item.tex || null) : null,
         };
         addDiscussion(d);
         paintHighlight(d);
