@@ -1,0 +1,37 @@
+{
+  "_comment": "Pre-computed responses for onboarding demo actions (instant first click). Regenerate with: node scripts/generate-onboarding-cache.mjs",
+  "papers": {
+    "attention-is-all-you-need": {
+      "citations": {
+        "[13]": {
+          "status": "ok",
+          "stage": "preview",
+          "citationText": "[13]",
+          "refText": "Sepp Hochreiter and Jürgen Schmidhuber. Long short-term memory. Neural computation, 9(8):1735–1780, 1997.",
+          "matchId": 13,
+          "url": null,
+          "urlMethod": null,
+          "citedTitle": "Long Short-Term Memory",
+          "preview": "The LSTM architecture introduced gated memory cells that let RNNs retain information over long sequences — the key breakthrough that made recurrent models practical before Transformers.\n• Vaswani et al. cite it while reviewing prior RNN/LSTM work that their model replaces.\n• LSTMs solved vanishing gradients but still process tokens sequentially; the Transformer argues pure attention can do better without recurrence.",
+          "previewSource": "cache",
+          "match": {
+            "isCitation": true,
+            "matchId": 13,
+            "confidence": 0.99,
+            "reason": "numeric bracket"
+          }
+        }
+      },
+      "chat": {
+        "math": {
+          "user": "Explain this math.",
+          "assistant": "**In plain language:** this computes a weighted mix of value vectors V, where each weight comes from how much each query Q aligns with each key K — then scaled dot-product attention is normalized with softmax.\n\n**Term by term:**\n• **Q, K, V** — query, key, and value matrices built from the input (each row is one token position).\n• **QKᵀ** — pairwise similarity scores between every query and every key.\n• **√d_k** — scaling factor (d_k = key dimension) that keeps dot products from growing too large before softmax.\n• **softmax(·)** — turns scores into non-negative weights that sum to 1 along the key axis.\n• **(·)V** — each output row is the weighted sum of value rows.\n\n**Why it's here:** this is the core attention mechanism the paper uses instead of recurrence — it lets every position attend to every other position in one parallel step."
+        },
+        "code": {
+          "user": "Translate this formula to code.",
+          "assistant": "```python\nimport torch\nimport torch.nn.functional as F\n\ndef scaled_dot_product_attention(Q, K, V):\n    # Q, K, V: (batch, seq_len, d_k) or (batch, heads, seq_len, d_k)\n    d_k = Q.size(-1)\n    scores = torch.matmul(Q, K.transpose(-2, -1)) / (d_k ** 0.5)  # (..., seq, seq)\n    weights = F.softmax(scores, dim=-1)\n    return torch.matmul(weights, V)  # (..., seq, d_v)\n```\n\nMaps directly to Attention(Q,K,V)=softmax(QKᵀ/√d_k)V — `matmul` for dot products, softmax over keys, then weighted sum of V."
+        }
+      }
+    }
+  }
+}

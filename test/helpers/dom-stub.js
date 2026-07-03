@@ -346,6 +346,9 @@ function buildSandbox({ onboardingJson } = {}) {
     if (call.url.includes('onboarding-curation.json')) {
       return jsonResponse(onboardingJson || { tracks: [], papers: {}, featured: '' });
     }
+    if (call.url.includes('onboarding-action-cache.json')) {
+      return jsonResponse({ papers: {} });
+    }
     return jsonResponse({});
   }
 

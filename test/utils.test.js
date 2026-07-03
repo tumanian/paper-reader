@@ -149,6 +149,33 @@ test('sanitizeOnboarding returns an empty shape for junk input', () => {
   assert.deepEqual(plain(app.sanitizeOnboarding(null)), { tracks: [], papers: {}, featured: '' });
 });
 
+test('sanitizeOnboardingActionCache keeps valid chat and citation entries', () => {
+  const out = app.sanitizeOnboardingActionCache({
+    papers: {
+      p1: {
+        citations: {
+          '[13]': { preview: 'LSTM paper', matchId: 13 },
+          bad: { matchId: 1 },
+        },
+        chat: {
+          math: { user: 'Explain this math.', assistant: 'Here is the answer.' },
+          code: { user: 'x', assistant: 42 },
+        },
+      },
+      empty: {},
+    },
+  });
+  assert.ok(out.papers.p1);
+  assert.equal(out.papers.p1.citations['[13]'].preview, 'LSTM paper');
+  assert.equal(out.papers.p1.chat.math.assistant, 'Here is the answer.');
+  assert.equal(out.papers.p1.chat.code, undefined);
+  assert.equal(out.papers.empty, undefined);
+});
+
+test('sanitizeOnboardingActionCache returns empty papers for junk input', () => {
+  assert.deepEqual(plain(app.sanitizeOnboardingActionCache(null)), { papers: {} });
+});
+
 // ── isTodoValue / normalizeForMatch ──────────────────────────────────────────
 test('isTodoValue flags empty and TODO-prefixed strings', () => {
   assert.equal(app.isTodoValue(''), true);

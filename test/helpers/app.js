@@ -67,7 +67,7 @@ const SHIM = `
       sanitizeCitationFormat, buildFallbackCitationFormat, matchWithStoredFormat, authorTokens, refMatchesAuthorTokens, matchCitationToReferences,
       shouldTryCitationPreview, findNearbyContext, buildPaperBlock, buildDocContext,
       esc, renderPreviewHtml, md, timeAgo,
-      sanitizeOnboarding, isTodoValue, normalizeForMatch, getFeaturedPaper,
+      sanitizeOnboarding, sanitizeOnboardingActionCache, isTodoValue, normalizeForMatch, getFeaturedPaper,
       buildPaperReferences, parseReferencesFromSection, parseAuthorYearReferenceLines,
       initStorage, loadStore, persistCurrentDoc,
       sendMessage, callClaude, buildRatingRecord, ratingIdFor,
