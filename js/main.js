@@ -5,7 +5,7 @@ import { initPdf, setPdfHooks, renderFromBuffer, restoreHighlightsForLoadedPages
 import { extractReferencesSection } from './citation-parse.js';
 import { initWebLoader, setWebLoaderHooks, loadWebPage, loadArxivPdf, startApp, setStatus, showViewer, parseArxivId, buildPaperReferences } from './web-loader.js';
 import { setCitationResolveHooks, logCitation, ensureCitationFormat } from './citation-resolve.js';
-import { initSelection, setSelectionHooks, updateReturnButton, finishCitationNavigation } from './selection.js';
+import { initSelection, setSelectionHooks, updateReturnButton, finishCitationNavigation, repositionPopover } from './selection.js';
 import { initFigure, setFigureHooks } from './figure.js';
 import { initChat, setChatHooks, paintHighlight, renderList, openChat, sendMessage, showList, findNearbyContext } from './chat.js';
 import { runOnboardingDemo, cancelOnboardingPlacement, maybeApplyOnboardingCuration, getFeaturedPaper, openFeaturedExample, loadOnboardingData, loadOnboardingActionCache } from './onboarding.js';
@@ -94,6 +94,7 @@ setWebLoaderHooks({
 
 setCitationResolveHooks({
   findNearbyContext,
+  repositionPopover,
 });
 
 setSelectionHooks({

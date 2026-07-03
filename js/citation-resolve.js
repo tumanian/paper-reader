@@ -20,8 +20,10 @@ import { fetchViaProxy, arxivIdFromUrl, buildPaperReferences, expandSelectionTex
 // Cross-module dep still owned by main.js (chat) until extracted. `_cr`-prefixed
 // so the shared-scope test bundle doesn't collide with other modules.
 let _crFindNearbyContext = () => '';
-export function setCitationResolveHooks({ findNearbyContext } = {}) {
+let _crRepositionPopover = () => {};
+export function setCitationResolveHooks({ findNearbyContext, repositionPopover } = {}) {
   if (findNearbyContext) _crFindNearbyContext = findNearbyContext;
+  if (repositionPopover) _crRepositionPopover = repositionPopover;
 }
 
 const CITE_LOG_KEY = 'paperReader.citationLog.v2';
@@ -453,9 +455,11 @@ async function callCitationPreviewClaude(payload, signal) {
 export async function loadCitationPreview() {
   const el = document.getElementById('cite-preview');
   const citeBtn = document.getElementById('cite-open-btn');
+  const readLaterBtn = document.getElementById('read-later-sel-btn');
   if (!pendingSel) {
     el.style.display = 'none';
     citeBtn.style.display = 'none';
+    readLaterBtn.style.display = 'none';
     citePreviewAbort?.abort();
     return;
   }
@@ -483,6 +487,7 @@ export async function loadCitationPreview() {
   el.style.display = 'block';
   el.classList.add('loading');
   el.textContent = 'Matching citation…';
+  _crRepositionPopover();
 
   const cachedPreview = getCitationLogEntry(logKey);
   if (cachedPreview?.status === 'ok' && cachedPreview.preview) {
@@ -496,10 +501,12 @@ export async function loadCitationPreview() {
     });
     citeBtn.style.display = cachedPreview.url ? 'flex' : 'none';
     citeBtn.textContent = '📖 Open citation';
+    readLaterBtn.style.display = (cachedPreview.url && cachedPreview.citedTitle) ? 'flex' : 'none';
     el.classList.remove('loading');
     el.innerHTML =
       `<div class="cite-preview-title">${esc(cachedPreview.citedTitle || 'Cited paper')}</div>` +
       renderPreviewHtml(cachedPreview.preview);
+    _crRepositionPopover();
     return;
   }
 
@@ -640,6 +647,8 @@ export async function loadCitationPreview() {
     const citedText = abstractOk ? cited.text : ref.text;
     cite.citedTitle = citedTitle;
     setPendingCitation(cite);
+    readLaterBtn.style.display = (cite.url && citedTitle) ? 'flex' : 'none';
+    _crRepositionPopover();
 
     el.textContent = 'Summarizing relevance…';
     const previewPayload = {
@@ -697,6 +706,7 @@ export async function loadCitationPreview() {
 
     el.classList.remove('loading');
     el.innerHTML = `<div class="cite-preview-title">${esc(citedTitle)}</div>${renderPreviewHtml(preview)}`;
+    _crRepositionPopover();
   } catch (e) {
     if (signal.aborted || e.name === 'AbortError') return;
     const errMsg = e.message || 'Preview unavailable';
@@ -710,6 +720,8 @@ export async function loadCitationPreview() {
     el.classList.remove('loading');
     el.innerHTML = `<div class="cite-preview-title">Citation</div><span style="color:#888">${esc(errMsg)}</span>`;
     citeBtn.style.display = 'none';
+    readLaterBtn.style.display = 'none';
     setPendingCitation(null);
+    _crRepositionPopover();
   }
 }

@@ -32,6 +32,7 @@ export function updateMathButtons() {
   const show = !!(pendingSel && pendingSel.math && pendingSel.math.isMath);
   document.getElementById('explain-math-btn').style.display = show ? 'flex' : 'none';
   document.getElementById('to-code-btn').style.display = show ? 'flex' : 'none';
+  repositionPopover();
 }
 
 // Ask Haiku to classify the raw selection. Returns 'math' | 'citation' | 'other'.
@@ -56,6 +57,9 @@ function updatePopoverButtons() {
   document.getElementById('explain-math-btn').style.display = 'none';
   document.getElementById('to-code-btn').style.display = 'none';
   citeBtn.style.display = 'none';
+  // "Read later" for a selection is only meaningful once the citation resolves
+  // to a real title + link; loadCitationPreview() reveals it then.
+  document.getElementById('read-later-sel-btn').style.display = 'none';
   previewEl.style.display = 'none';
   cancelCitationPreview();
   if (classifyTimer) { clearTimeout(classifyTimer); classifyTimer = null; }
@@ -171,18 +175,21 @@ async function openCitationPaper() {
 
 async function addSelectionToReadLater() {
   if (!pendingSel) return;
+  // Guard: only a resolved citation (real title + link) may be saved. The button
+  // is hidden until then, but never trust the UI state alone.
+  const cite = pendingCitation;
+  if (!cite?.url || !cite?.citedTitle) return;
   hidePopover();
   window.getSelection()?.removeAllRanges();
 
-  const cite = pendingCitation || parseCitation(pendingSel.txt);
   const added = await addToReadLater({
     title: readLaterTitleForCitation(cite, pendingSel.txt),
-    url: cite?.url || null,
+    url: cite.url,
     citationText: pendingSel.txt,
     sourceDoc: docMeta.name,
     refText: cite?.refText || null,
-    docId: cite?.url ? null : currentDocId,
-    mode: cite?.url ? 'web' : docMeta.mode,
+    docId: null,
+    mode: 'web',
   });
 
   setPendingSel(null);
@@ -190,23 +197,54 @@ async function addSelectionToReadLater() {
   if (added) setStatus('Added to Read later');
 }
 
+// Remember the selection's anchor rect so the popover can be re-placed whenever
+// its height changes (e.g. async citation preview + buttons appear later).
+let popoverAnchor = null;
+
 export function positionPopover(last) {
+  popoverAnchor = last;
   const pop = document.getElementById('selection-popover');
   pop.style.display = 'block';
-  requestAnimationFrame(() => {
-    const pw = pop.offsetWidth, ph = pop.offsetHeight;
-    let left = last.right - pw/2, top = last.bottom + 10;
-    if (left < 8) left = 8;
-    if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
-    if (top  + ph > window.innerHeight - 8) top = last.top - ph - 8;
-    pop.style.left = left + 'px'; pop.style.top = top + 'px';
-  });
+  requestAnimationFrame(() => repositionPopover());
+}
+
+// Clamp the popover fully inside the viewport: prefer below the selection, flip
+// above when it doesn't fit, and never let the top/bottom spill off-screen (the
+// popover scrolls internally if it's taller than the viewport).
+export function repositionPopover() {
+  const pop = document.getElementById('selection-popover');
+  if (!popoverAnchor || pop.style.display === 'none') return;
+  const last = popoverAnchor;
+  const M = 8;
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+
+  let left = last.right - pw / 2;
+  if (left < M) left = M;
+  if (left + pw > window.innerWidth - M) left = window.innerWidth - pw - M;
+
+  const spaceBelow = window.innerHeight - last.bottom;
+  const spaceAbove = last.top;
+  let top;
+  if (ph + 10 <= spaceBelow - M) {
+    top = last.bottom + 10;                 // fits below
+  } else if (ph + 10 <= spaceAbove - M) {
+    top = last.top - ph - 10;               // fits above
+  } else {
+    top = spaceBelow >= spaceAbove ? last.bottom + 10 : M;  // pick the roomier side
+  }
+  if (top + ph > window.innerHeight - M) top = window.innerHeight - ph - M;
+  if (top < M) top = M;
+
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
 }
 
 export function hidePopover() {
+  popoverAnchor = null;
   document.getElementById('selection-popover').style.display = 'none';
   document.getElementById('explain-math-btn').style.display = 'none';
   document.getElementById('to-code-btn').style.display = 'none';
+  document.getElementById('read-later-sel-btn').style.display = 'none';
   if (classifyTimer) { clearTimeout(classifyTimer); classifyTimer = null; }
   classifyToken++;  // invalidate any in-flight classification
   cancelCitationPreview();
