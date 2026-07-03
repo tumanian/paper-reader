@@ -418,6 +418,76 @@ export function extractReferencesSectionFromDoc(doc) {
   return extractReferencesSection(fullText);
 }
 
+function findCitationAnchor(source, selText) {
+  const expanded = (selText || '').trim();
+  if (!expanded) return -1;
+
+  let idx = source.indexOf(expanded);
+  if (idx >= 0) return idx;
+
+  const needle = expanded.slice(0, Math.min(24, expanded.length));
+  if (needle.length >= 6) {
+    idx = source.indexOf(needle);
+    if (idx >= 0) return idx;
+  }
+
+  const authorM = expanded.match(/([A-Z][A-Za-z\-']{2,})/);
+  if (!authorM) return -1;
+  const surname = authorM[1];
+  let pos = 0;
+  while (pos < source.length) {
+    const hit = source.indexOf(surname, pos);
+    if (hit < 0) break;
+    for (let i = hit; i >= Math.max(0, hit - 100); i--) {
+      if (source[i] === '(') return i;
+      if (/[.!?]/.test(source[i]) && i < hit - 8) break;
+    }
+    pos = hit + surname.length;
+  }
+  return -1;
+}
+
+function expandCitationInPaperText(selText, source) {
+  const expanded = (selText || '').trim();
+  if (!expanded || !source) return null;
+
+  const idx = findCitationAnchor(source, expanded);
+  if (idx < 0) return null;
+
+  let start = idx;
+  if (source[start] !== '(') {
+    for (let i = start - 1; i >= Math.max(0, start - 120); i--) {
+      if (source[i] === '(') { start = i; break; }
+      if (/[.!?]/.test(source[i]) && i < start - 8) break;
+    }
+  }
+
+  if (source[start] === '(') {
+    let depth = 0;
+    let end = start;
+    for (let i = start; i < source.length && i < start + 220; i++) {
+      if (source[i] === '(') depth++;
+      else if (source[i] === ')') {
+        depth--;
+        if (depth === 0) { end = i + 1; break; }
+      }
+    }
+    if (end > start + 1) {
+      return source.slice(start, end).replace(/\s+/g, ' ').trim();
+    }
+  }
+
+  let end = idx + expanded.length;
+  if (/,\s*(?:19|20)\d{0,3}[a-z]?\s*\)?$/.test(expanded)) {
+    while (end < source.length && /[\dA-Za-z]/.test(source[end])) end++;
+    if (source[end] === ')') end++;
+  } else {
+    while (start > 0 && /[^\s\n]/.test(source[start - 1])) start--;
+    while (end < source.length && /[^\s\n]/.test(source[end])) end++;
+  }
+  return source.slice(start, end).replace(/\s+/g, ' ').trim();
+}
+
 export function expandSelectionText(selText, range) {
   let expanded = (selText || '').trim();
   if (range) {
@@ -435,16 +505,8 @@ export function expandSelectionText(selText, range) {
   }
 
   if (paperText && expanded.length <= 160) {
-    const needle = expanded.slice(0, Math.min(24, expanded.length));
-    let idx = paperText.indexOf(expanded);
-    if (idx < 0 && needle.length >= 6) idx = paperText.indexOf(needle);
-    if (idx >= 0) {
-      let start = idx;
-      let end = idx + expanded.length;
-      while (start > 0 && /[^\s\n,;.]/.test(paperText[start - 1])) start--;
-      while (end < paperText.length && /[^\s\n,;.]/.test(paperText[end])) end++;
-      expanded = paperText.slice(start, end).replace(/\s+/g, ' ').trim();
-    }
+    const fromPaper = expandCitationInPaperText(expanded, paperText);
+    if (fromPaper) expanded = fromPaper;
   }
 
   return expanded || selText;

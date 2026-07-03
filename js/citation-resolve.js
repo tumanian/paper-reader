@@ -12,6 +12,7 @@ import { persistCurrentDoc } from './persistence.js';
 import {
   authorLastNames, scoreCrossrefItem, resolveReferenceEntry, extractRefNumber, findReferenceInPaper,
   parseAuthorYearCitation, parseBibliographyMetadata, parseAuthorYearFromSelection,
+  parsePartialAuthorYearFromSelection, parseCitation,
   verifyFetchedPaperAgainstBib, sanitizeCitationFormat, buildFallbackCitationFormat, matchCitationToReferences,
   extractReferencesSection,
 } from './citation-parse.js';
@@ -163,6 +164,255 @@ async function lookupCrossrefBibliography(meta, signal) {
   return null;
 }
 
+async function lookupCrossrefAuthorYear(authorPart, yearStr, signal) {
+  const surname = authorLastNames(authorPart)[0];
+  if (!surname || !yearStr) return null;
+
+  const meta = {
+    entry: `${authorPart}, ${yearStr}`,
+    year: yearStr,
+    title: '',
+    authors: authorPart,
+  };
+
+  try {
+    const params = new URLSearchParams({
+      rows: '10',
+      'query.author': surname,
+      filter: `from-pub-date:${yearStr},until-pub-date:${yearStr}`,
+    });
+    const r = await fetch(`https://api.crossref.org/works?${params}`, { signal });
+    if (!r.ok) return null;
+    const data = await r.json();
+    let best = null;
+    let bestScore = 0;
+    for (const item of data.message?.items || []) {
+      const score = scoreCrossrefItem(item, meta);
+      if (score > bestScore) { bestScore = score; best = item; }
+    }
+    if (best && bestScore >= 30 && best.DOI) {
+      return { doi: best.DOI, score: bestScore, title: best.title?.[0] || '' };
+    }
+  } catch (_) {}
+  return null;
+}
+
+export function buildCiteFromExpandedSelection(text) {
+  const t = (text || '').trim();
+  if (!t) return null;
+
+  const linked = parseCitation(t);
+  if (linked?.url) {
+    return {
+      url: linked.url,
+      label: t,
+      refText: linked.refText || t,
+      citedTitle: linked.label || null,
+      authors: linked.authors || null,
+      year: linked.year || null,
+    };
+  }
+
+  let ay = parseAuthorYearFromSelection(t);
+  if (!ay) {
+    const partial = parsePartialAuthorYearFromSelection(t);
+    if (partial?.yearStr) ay = { authorPart: partial.authorPart, yearStr: partial.yearStr };
+  }
+  if (!ay?.yearStr) return null;
+
+  return {
+    url: null,
+    label: t,
+    refText: t,
+    citedTitle: null,
+    authors: ay.authorPart,
+    year: ay.yearStr,
+  };
+}
+
+async function summarizeAndShowCitationPreview({
+  el, citeBtn, readLaterBtn, logKey, expandedSelection, passage, signal,
+  cite, citedTitle, citedText, citedTextKind, urlMethod, match, refText, matchId,
+}) {
+  cite.citedTitle = citedTitle;
+  setPendingCitation(cite);
+  readLaterBtn.style.display = citedTitle ? 'flex' : 'none';
+  citeBtn.style.display = cite.url ? 'flex' : 'none';
+  citeBtn.textContent = '📖 Open citation';
+  _crRepositionPopover();
+
+  el.textContent = 'Summarizing relevance…';
+  const previewPayload = {
+    parentTitle: docMeta.name,
+    parentExcerpt: passage,
+    citationText: expandedSelection,
+    citedTitle,
+    citedText,
+    citedTextKind,
+  };
+
+  let previewResult = await callCitationPreviewHaiku(previewPayload, signal);
+  if (signal.aborted) return;
+  if (previewResult?._debug) {
+    logCitation('debug', 'preview-haiku-prompt', previewResult._debug);
+    delete previewResult._debug;
+  }
+
+  let preview = previewResult.preview || '';
+  let previewSource = previewResult.source || 'haiku';
+
+  if (!previewResult.sufficient) {
+    logCitation('fail', 'preview-haiku', {
+      logKey,
+      reason: previewResult.reason || 'insufficient',
+    });
+    el.textContent = 'Asking Sonnet…';
+    previewResult = await callCitationPreviewClaude(previewPayload, signal);
+    if (signal.aborted) return;
+    if (previewResult?._debug) {
+      logCitation('debug', 'preview-sonnet-prompt', previewResult._debug);
+      delete previewResult._debug;
+    }
+    preview = previewResult.preview || preview;
+    previewSource = previewResult.source || 'sonnet';
+    logCitation('success', 'preview-sonnet', { logKey, url: cite.url });
+  } else {
+    logCitation('success', 'preview-haiku', { logKey, url: cite.url });
+  }
+
+  writeCitationLogEntry(logKey, {
+    status: 'ok',
+    stage: 'preview',
+    citationText: expandedSelection,
+    refText,
+    matchId,
+    url: cite.url,
+    urlMethod,
+    citedTitle,
+    preview,
+    previewSource,
+    match,
+    error: null,
+  });
+
+  el.classList.remove('loading');
+  el.innerHTML = `<div class="cite-preview-title">${esc(citedTitle)}</div>${renderPreviewHtml(preview)}`;
+  _crRepositionPopover();
+}
+
+async function loadCitationPreviewWithoutBibliography({
+  el, citeBtn, readLaterBtn, expandedSelection, passage, logKey, signal,
+}) {
+  const cachedPreview = getCitationLogEntry(logKey);
+  if (cachedPreview?.status === 'ok' && cachedPreview.preview) {
+    logCitation('cache-hit', 'preview', { logKey, citationText: expandedSelection, url: cachedPreview.url });
+    el.style.display = 'block';
+    setPendingCitation({
+      url: cachedPreview.url,
+      refText: cachedPreview.refText || expandedSelection,
+      label: expandedSelection,
+      citedTitle: cachedPreview.citedTitle || null,
+    });
+    citeBtn.style.display = cachedPreview.url ? 'flex' : 'none';
+    citeBtn.textContent = '📖 Open citation';
+    readLaterBtn.style.display = cachedPreview.citedTitle ? 'flex' : 'none';
+    el.classList.remove('loading');
+    el.innerHTML =
+      `<div class="cite-preview-title">${esc(cachedPreview.citedTitle || 'Cited paper')}</div>` +
+      renderPreviewHtml(cachedPreview.preview);
+    _crRepositionPopover();
+    return;
+  }
+
+  const cite = buildCiteFromExpandedSelection(expandedSelection);
+  if (!cite) {
+    logCitation('fail', 'match', { logKey, selection: expandedSelection, reason: 'no bibliography' });
+    el.style.display = 'none';
+    citeBtn.style.display = 'none';
+    readLaterBtn.style.display = 'none';
+    setPendingCitation(null);
+    return;
+  }
+
+  el.style.display = 'block';
+  el.classList.add('loading');
+  el.textContent = 'Looking up citation…';
+  _crRepositionPopover();
+  setPendingCitation(cite);
+
+  let urlMethod = cite.url ? 'direct' : null;
+  let crossrefTitle = cite.citedTitle;
+
+  if (!cite.url) {
+    try {
+      const resolved = await resolveCitationUrl(cite, signal);
+      if (signal.aborted) return;
+      if (resolved?.url) {
+        cite.url = resolved.url;
+        urlMethod = resolved.method;
+        setPendingCitation(cite);
+      }
+    } catch (e) {
+      if (signal.aborted || e.name === 'AbortError') return;
+    }
+
+    if (!crossrefTitle && cite.authors && cite.year) {
+      try {
+        const hit = await lookupCrossrefAuthorYear(cite.authors, cite.year, signal);
+        if (signal.aborted) return;
+        if (hit?.title) crossrefTitle = hit.title;
+      } catch (e) {
+        if (signal.aborted || e.name === 'AbortError') return;
+      }
+    }
+  }
+
+  const bibMeta = parseBibliographyMetadata(cite.refText);
+  let cited = { title: crossrefTitle || bibMeta.title || '', text: '' };
+  let abstractOk = false;
+
+  if (cite.url) {
+    el.textContent = 'Fetching abstract…';
+    try {
+      const fetched = await fetchCitedPaperInfo(cite.url, signal);
+      if (signal.aborted) return;
+      const verify = verifyFetchedPaperAgainstBib(fetched, {
+        ...bibMeta,
+        title: crossrefTitle || bibMeta.title,
+        authors: cite.authors || bibMeta.authors,
+        year: cite.year || bibMeta.year,
+      });
+      if (verify.ok) {
+        cited = fetched;
+        abstractOk = true;
+        logCitation('success', 'abstract', { logKey, url: cite.url, title: cited.title, verify });
+      }
+    } catch (e) {
+      if (signal.aborted || e.name === 'AbortError') return;
+      logCitation('fail', 'abstract', { logKey, url: cite.url, error: e.message });
+    }
+  }
+
+  const citedTitle = (abstractOk && cited.title)
+    ? cited.title
+    : (crossrefTitle || (cite.authors && cite.year ? `${cite.authors} (${cite.year})` : cite.label));
+  const citedText = abstractOk ? cited.text : cite.refText;
+
+  logCitation('success', 'match', {
+    logKey,
+    selection: expandedSelection,
+    reason: 'author-year without bibliography',
+    citedTitle: citedTitle?.slice(0, 80),
+  });
+
+  await summarizeAndShowCitationPreview({
+    el, citeBtn, readLaterBtn, logKey, expandedSelection, passage, signal,
+    cite, citedTitle, citedText,
+    citedTextKind: abstractOk ? 'abstract' : 'citation-text',
+    urlMethod, match: { isCitation: true, matchId: null, reason: 'no bibliography' },
+    refText: cite.refText, matchId: null,
+  });
+}
 
 export async function resolveCitationUrl(cite, signal) {
   const citationText = cite?.refText || cite?.label || '';
@@ -236,6 +486,17 @@ export async function resolveCitationUrl(cite, signal) {
   const meta = parseBibliographyMetadata(bibText);
   if (cite.authors) meta.authors = cite.authors;
   if (cite.year) meta.year = cite.year;
+
+  if (cite.authors && cite.year) {
+    try {
+      const hit = await lookupCrossrefAuthorYear(cite.authors, cite.year, signal);
+      if (hit?.doi) {
+        return succeed(`https://doi.org/${hit.doi}`, 'crossref-author-year');
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+    }
+  }
 
   if (meta.entry.length >= 12) {
     try {
@@ -465,24 +726,38 @@ export async function loadCitationPreview() {
   }
 
   buildPaperReferences();
-  if (!paperReferences.length) {
-    el.style.display = 'none';
-    citeBtn.style.display = 'none';
-    return;
-  }
 
   citePreviewAbort?.abort();
   citePreviewAbort = new AbortController();
   const { signal } = citePreviewAbort;
-
-  // Learn format in background — never block matching on this round-trip.
-  void ensureCitationFormat();
 
   const rawSelection = pendingSel.txt;
   const expandedSelection = expandSelectionText(rawSelection, pendingSel.range);
   pendingSel.expandedTxt = expandedSelection;
   const passage = _crFindNearbyContext(expandedSelection, 1200);
   const logKey = citeLogKey(expandedSelection);
+
+  if (!paperReferences.length) {
+    try {
+      await loadCitationPreviewWithoutBibliography({
+        el, citeBtn, readLaterBtn, expandedSelection, passage, logKey, signal,
+      });
+    } catch (e) {
+      if (signal.aborted || e.name === 'AbortError') return;
+      const errMsg = e.message || 'Preview unavailable';
+      logCitation('fail', 'preview', { logKey, selection: expandedSelection, error: errMsg });
+      el.classList.remove('loading');
+      el.innerHTML = `<div class="cite-preview-title">Citation</div><span style="color:#888">${esc(errMsg)}</span>`;
+      citeBtn.style.display = 'none';
+      readLaterBtn.style.display = 'none';
+      setPendingCitation(null);
+      _crRepositionPopover();
+    }
+    return;
+  }
+
+  // Learn format in background — never block matching on this round-trip.
+  void ensureCitationFormat();
 
   el.style.display = 'block';
   el.classList.add('loading');
@@ -645,68 +920,13 @@ export async function loadCitationPreview() {
 
     const citedTitle = (abstractOk && cited.title) ? cited.title : (bibMeta.title || ref.text.slice(0, 80));
     const citedText = abstractOk ? cited.text : ref.text;
-    cite.citedTitle = citedTitle;
-    setPendingCitation(cite);
-    readLaterBtn.style.display = citedTitle ? 'flex' : 'none';
-    _crRepositionPopover();
 
-    el.textContent = 'Summarizing relevance…';
-    const previewPayload = {
-      parentTitle: docMeta.name,
-      parentExcerpt: passage,
-      citationText: expandedSelection,
-      citedTitle,
-      citedText,
+    await summarizeAndShowCitationPreview({
+      el, citeBtn, readLaterBtn, logKey, expandedSelection, passage, signal,
+      cite, citedTitle, citedText,
       citedTextKind: abstractOk ? 'abstract' : 'bibliography-entry',
-    };
-
-    let previewResult = await callCitationPreviewHaiku(previewPayload, signal);
-    if (signal.aborted) return;
-    if (previewResult?._debug) {
-      logCitation('debug', 'preview-haiku-prompt', previewResult._debug);
-      delete previewResult._debug;
-    }
-
-    let preview = previewResult.preview || '';
-    let previewSource = previewResult.source || 'haiku';
-
-    if (!previewResult.sufficient) {
-      logCitation('fail', 'preview-haiku', {
-        logKey,
-        reason: previewResult.reason || 'insufficient',
-      });
-      el.textContent = 'Asking Sonnet…';
-      previewResult = await callCitationPreviewClaude(previewPayload, signal);
-      if (signal.aborted) return;
-      if (previewResult?._debug) {
-        logCitation('debug', 'preview-sonnet-prompt', previewResult._debug);
-        delete previewResult._debug;
-      }
-      preview = previewResult.preview || preview;
-      previewSource = previewResult.source || 'sonnet';
-      logCitation('success', 'preview-sonnet', { logKey, url: cite.url });
-    } else {
-      logCitation('success', 'preview-haiku', { logKey, url: cite.url });
-    }
-
-    writeCitationLogEntry(logKey, {
-      status: 'ok',
-      stage: 'preview',
-      citationText: expandedSelection,
-      refText: ref.text,
-      matchId: ref.id,
-      url: cite.url,
-      urlMethod,
-      citedTitle,
-      preview,
-      previewSource,
-      match,
-      error: null,
+      urlMethod, match, refText: ref.text, matchId: ref.id,
     });
-
-    el.classList.remove('loading');
-    el.innerHTML = `<div class="cite-preview-title">${esc(citedTitle)}</div>${renderPreviewHtml(preview)}`;
-    _crRepositionPopover();
   } catch (e) {
     if (signal.aborted || e.name === 'AbortError') return;
     const errMsg = e.message || 'Preview unavailable';

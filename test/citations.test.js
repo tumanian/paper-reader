@@ -79,6 +79,28 @@ test('matches an author-year selection to the right entry', () => {
   assert.equal(m.matchId, 1);
 });
 
+test('matches a truncated parenthetical author-year selection', () => {
+  const refs = [
+    { id: 1, text: 'Dettmers, T. et al. LLM.int8(): 8-bit matrix multiplication for transformers. NeurIPS 2022.' },
+    { id: 2, text: 'Smith, J. Widgets in the wild. 2020.' },
+  ];
+  const m = app.matchCitationToReferences('(Dettmers et al., 20', refs);
+  assert.equal(m?.isCitation, true);
+  assert.equal(m?.matchId, 1);
+});
+
+test('expandSelectionText completes a partial parenthetical from paper text', () => {
+  app.state.paperText = 'Prior work (Dettmers et al., 2022) shows quantization helps.';
+  const expanded = app.expandSelectionText('(Dettmers et al., 20', null);
+  assert.equal(expanded, '(Dettmers et al., 2022)');
+});
+
+test('expandSelectionText completes through the author-year comma', () => {
+  app.state.paperText = 'See (Dettmers et al., 2022) for details.';
+  const expanded = app.expandSelectionText('(Dettmers et al.,', null);
+  assert.equal(expanded, '(Dettmers et al., 2022)');
+});
+
 test('returns null when the selection is not a citation', () => {
   assert.equal(app.matchCitationToReferences('a plain English sentence', REFS), null);
 });
@@ -141,6 +163,7 @@ test('extractRefNumber pulls the leading reference id', () => {
 test('looksLikeCitation recognizes citation-shaped text and rejects prose', () => {
   assert.equal(app.looksLikeCitation('[12]'), true);
   assert.equal(app.looksLikeCitation('(Smith & Lee, 2020)'), true);
+  assert.equal(app.looksLikeCitation('(Dettmers et al., 20'), true);
   assert.equal(app.looksLikeCitation('https://example.com'), true);
   assert.equal(app.looksLikeCitation('the quick brown fox'), false);
 });
@@ -213,4 +236,9 @@ test('shouldTryCitationPreview is true for citation-shaped text and false for lo
   app.state.paperReferences = REFS;
   assert.equal(app.shouldTryCitationPreview('[9]'), true);
   assert.equal(app.shouldTryCitationPreview('x'.repeat(250)), false);
+});
+
+test('shouldTryCitationPreview works for author-year even without a bibliography', () => {
+  app.state.paperReferences = [];
+  assert.equal(app.shouldTryCitationPreview('(Dettmers et al., 2022)'), true);
 });

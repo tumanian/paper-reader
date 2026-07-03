@@ -240,6 +240,49 @@ function findBestAuthorYearMatch(references, authorPart, yearStr) {
   };
 }
 
+function parsePartialAuthorYearFromSelection(text) {
+  const t = String(text || '').trim();
+  const patterns = [
+    /\(([^()]+?),\s*((?:19|20)\d{0,2})\)?$/,
+    /\b([A-Z][A-Za-z\-']+(?:\s+(?:et\s+al\.?|&\s+[A-Z][A-Za-z\-']+))*)\s*,\s*((?:19|20)\d{0,2})\s*\)?$/,
+  ];
+  for (const re of patterns) {
+    const m = t.match(re);
+    if (!m || !isPlausibleAuthorPart(m[1])) continue;
+    const yearToken = m[2];
+    if (/^(?:19|20)\d{2}[a-z]?$/.test(yearToken)) {
+      return { authorPart: m[1].trim(), yearStr: yearToken, yearPrefix: null };
+    }
+    if (yearToken.length >= 2 && yearToken.length <= 3 && /^(?:19|20)\d*$/.test(yearToken)) {
+      return { authorPart: m[1].trim(), yearStr: null, yearPrefix: yearToken };
+    }
+  }
+  return null;
+}
+
+function findBestAuthorYearMatchByPrefix(references, authorPart, yearPrefix) {
+  const prefix = String(yearPrefix || '').trim();
+  if (!prefix || prefix.length < 2 || prefix.length > 3 || !/^(?:19|20)\d*$/.test(prefix)) return null;
+  const scored = [];
+  for (const ref of references) {
+    const yearM = String(ref.text || '').match(/\b((?:19|20)\d{2}[a-z]?)\b/);
+    if (!yearM || !yearM[1].startsWith(prefix)) continue;
+    const score = scoreRefForAuthorYear(ref.text, authorPart, yearM[1]);
+    if (score > 0) scored.push({ ref, score });
+  }
+  if (!scored.length) return null;
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  const second = scored[1];
+  if (second && best.score - second.score < 10) return null;
+  return {
+    isCitation: true,
+    matchId: best.ref.id,
+    confidence: !second || best.score - second.score >= 20 ? 0.9 : 0.84,
+    reason: 'author-year prefix match',
+  };
+}
+
 function refMatchesAuthorYear(refText, authorPart, yearStr) {
   return scoreRefForAuthorYear(refText, authorPart, yearStr) > 0;
 }
@@ -262,6 +305,17 @@ function matchAuthorCitationLocally(selection, references) {
   if (parsed) {
     const best = findBestAuthorYearMatch(references, parsed.authorPart, parsed.yearStr);
     if (best) return best;
+  }
+
+  const partialAy = parsePartialAuthorYearFromSelection(selection);
+  if (partialAy) {
+    if (partialAy.yearStr) {
+      const best = findBestAuthorYearMatch(references, partialAy.authorPart, partialAy.yearStr);
+      if (best) return best;
+    } else if (partialAy.yearPrefix) {
+      const best = findBestAuthorYearMatchByPrefix(references, partialAy.authorPart, partialAy.yearPrefix);
+      if (best) return best;
+    }
   }
 
   const t = String(selection || '').trim();
