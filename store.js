@@ -539,11 +539,12 @@ window.PaperStore = (function () {
   }
 
   function loadLocalState() {
-    // Cloud configured but signed out: no personal library (onboarding only).
-    // The `.local` namespace is for true local-only mode (!supabase).
+    // Cloud configured but signed out: no personal library (onboarding only),
+    // but the read-later list is device-local and persists — addReadLater
+    // already writes it to the `.local` namespace while signed out.
     if (supabase && !userId) {
       docs = {};
-      readLater = [];
+      readLater = loadLocalReadLater();
       return;
     }
     docs = loadLocalDocs();

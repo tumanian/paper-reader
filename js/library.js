@@ -153,11 +153,15 @@ export async function openReadLaterItem(item) {
     await _loadWebPage(item.url);
     return;
   }
-  if (item.docId) {
+  // Linkless citation: reopen its source paper — but only if that doc actually
+  // exists in the store (signed-out sessions don't persist docs, so the docId
+  // can dangle; reopenDoc would silently no-op).
+  if (item.docId && loadStore()[item.docId]) {
     await reopenDoc(item.docId);
     return;
   }
-  alert('This citation could not be resolved to a URL. Try selecting it again in the source paper.');
+  alert('This citation has no link yet' +
+    (item.sourceDoc ? ` — open "${item.sourceDoc}" and select the citation again to resolve it.` : '. Try selecting it again in the source paper.'));
 }
 
 // Reopen a saved doc. For web docs we can re-fetch + reposition highlights.
