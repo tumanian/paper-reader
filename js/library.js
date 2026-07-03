@@ -254,7 +254,12 @@ export function updateAuthBar(info) {
       : '<strong>Local only</strong> — cloud not configured.';
   }
 
-  if (label) label.textContent = signedIn ? who : 'Sign in';
+  if (label) {
+    label.textContent = signedIn ? who : 'Sign in';
+    // When signed in, the avatar + status dot are enough — hide the name to save space.
+    label.style.display = signedIn ? 'none' : '';
+  }
+  btn.title = signedIn ? who : '';
 
   if (avatar) {
     if (signedIn && identity.avatar) {

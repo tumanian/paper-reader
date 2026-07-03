@@ -33,8 +33,9 @@ export function setPdfHooks({
 export function initPdf() {
   const dropZone  = document.getElementById('drop-zone');
   const fileInput = document.getElementById('pdf-input');
+  const attachBtn = document.getElementById('attach-btn');
 
-  dropZone.addEventListener('click', () => fileInput.click());
+  if (attachBtn) attachBtn.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', e => { if (e.target.files[0]) loadPDF(e.target.files[0]); });
   dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('over'); });
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
