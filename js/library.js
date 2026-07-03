@@ -154,8 +154,8 @@ export async function openReadLaterItem(item) {
     return;
   }
   // Linkless citation: reopen its source paper — but only if that doc actually
-  // exists in the store (signed-out sessions don't persist docs, so the docId
-  // can dangle; reopenDoc would silently no-op).
+  // exists in the store (the docId can dangle, e.g. the source paper was
+  // deleted; reopenDoc would silently no-op).
   if (item.docId && loadStore()[item.docId]) {
     await reopenDoc(item.docId);
     return;

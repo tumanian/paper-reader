@@ -249,25 +249,42 @@ test('cloud rows and queries are scoped by the Supabase user id, not the email',
   assert.deepEqual(sel.filters, [['owner_email', USER_A.id]]);
 });
 
-test('signed out with cloud configured shows an empty store even if .local has data', async () => {
+// Design principle: the signed-out experience is equivalent to signed-in, just
+// device-local. Signed-out sessions read and write the `.local` namespace.
+test('signed out with cloud configured shows the .local library', async () => {
   cloudConfig();
   app.localStorage.setItem('paperReader.docs.v2.local', JSON.stringify({
-    'web::leaked': { id: 'web::leaked', name: 'Leaked', mode: 'web', discussions: [] },
+    'web::mine': { id: 'web::mine', name: 'Mine', mode: 'web', discussions: [] },
   }));
   await PaperStore.init();
   assert.equal(PaperStore.isSignedIn(), false);
-  assert.deepEqual(app.plain(PaperStore.getStore()), {});
-  assert.equal(PaperStore.getReadLater().length, 0);
+  assert.ok(PaperStore.getStore()['web::mine']);
 });
 
-test('saveDoc is a no-op when cloud is configured but signed out', async () => {
+test('saveDoc persists to .local when cloud is configured but signed out', async () => {
   cloudConfig();
   await PaperStore.init();
   await PaperStore.saveDoc({
-    id: 'web::ghost', name: 'Ghost', mode: 'web', badge: 'Web', url: 'http://g', updated: 1,
+    id: 'web::offline', name: 'Offline', mode: 'web', badge: 'Web', url: 'http://o', updated: 1,
     discussions: [],
   });
-  assert.deepEqual(app.plain(PaperStore.getStore()), {});
+  assert.ok(PaperStore.getStore()['web::offline']);
+  const raw = JSON.parse(app.localStorage.getItem('paperReader.docs.v2.local'));
+  assert.ok(raw['web::offline']);
+});
+
+test('saveDoc drops a stale write when the session changed since the caller captured it', async () => {
+  cloudConfig();
+  app.fakeSupabase.setSession(sessionFor(USER_A));
+  await PaperStore.init();
+
+  // Caller captured USER_A, but by save time the session is signed out.
+  app.fakeSupabase.emitAuthChange('SIGNED_OUT', null);
+  await PaperStore.saveDoc({
+    id: 'web::stale', name: 'Stale', mode: 'web', badge: 'Web', url: 'http://s', updated: 1,
+    discussions: [],
+  }, USER_A.id);
+  assert.equal(PaperStore.getStore()['web::stale'], undefined);
   assert.equal(app.localStorage.getItem('paperReader.docs.v2.local'), null);
 });
 
@@ -284,6 +301,126 @@ test('signOut clears the in-memory library (signed-in papers must not linger)', 
   await PaperStore.signOut();
   assert.equal(PaperStore.isSignedIn(), false);
   assert.deepEqual(app.plain(PaperStore.getStore()), {});
+});
+
+// ── signed-out → signed-in migration ─────────────────────────────────────────
+// Signing in exists for cross-device transfer, so everything created while
+// signed out moves into the account (one-way), then `.local` is cleared.
+
+function localDoc(id, extra = {}) {
+  return {
+    id, name: 'Local ' + id, mode: 'web', badge: 'Web', url: 'http://' + id, updated: 500,
+    discussions: [{ id: 1, txt: 'hl', mode: 'web', pageNum: null, color: { bg: 'b', dot: 'd' }, relRects: [], messages: [{ role: 'user', content: 'q' }] }],
+    ...extra,
+  };
+}
+
+test('signing in migrates .local docs and read-later into the account and clears .local', async () => {
+  cloudConfig();
+  app.localStorage.setItem('paperReader.docs.v2.local', JSON.stringify({
+    'web::l1': localDoc('web::l1'),
+  }));
+  app.localStorage.setItem('paperReader.readLater.v2.local', JSON.stringify([
+    { id: 'rl::l1', title: 'Later', url: 'http://later', addedAt: 100 },
+  ]));
+
+  await PaperStore.init(); // signed out at boot
+  app.fakeSupabase.emitAuthChange('SIGNED_IN', sessionFor(USER_A));
+
+  assert.ok(PaperStore.getStore()['web::l1'], 'doc adopted into the account');
+  assert.equal(PaperStore.getReadLater()[0].id, 'rl::l1');
+
+  const keyA = 'paperReader.docs.v2.' + USER_A.id;
+  assert.ok(JSON.parse(app.localStorage.getItem(keyA))['web::l1'], 'account namespace has the doc');
+  assert.equal(app.localStorage.getItem('paperReader.docs.v2.local'), null, '.local docs cleared');
+  assert.equal(app.localStorage.getItem('paperReader.readLater.v2.local'), null, '.local read-later cleared');
+});
+
+test('untouched onboarding demo docs are seeded content and are NOT migrated', async () => {
+  cloudConfig();
+  const demoDoc = localDoc('web::demo', {
+    discussions: [
+      { id: 1, txt: 'demo', onboarding: true, messages: [] },
+      { id: 2, txt: 'demo math', onboarding: true, messages: [
+        { role: 'user', content: 'Explain this math.' },
+        { role: 'assistant', content: 'canned answer' },
+      ] },
+    ],
+  });
+  app.localStorage.setItem('paperReader.docs.v2.local', JSON.stringify({
+    'web::demo': demoDoc,
+    'web::real': localDoc('web::real'),
+  }));
+
+  await PaperStore.init();
+  app.fakeSupabase.emitAuthChange('SIGNED_IN', sessionFor(USER_A));
+
+  assert.equal(PaperStore.getStore()['web::demo'], undefined, 'demo doc skipped');
+  assert.ok(PaperStore.getStore()['web::real'], 'real doc migrated');
+  assert.equal(app.localStorage.getItem('paperReader.docs.v2.local'), null);
+});
+
+test('a demo doc the visitor actually engaged with IS migrated', async () => {
+  const H2 = PaperStore._internals;
+  const engaged = localDoc('web::demo', {
+    discussions: [{ id: 1, txt: 'demo', onboarding: true, messages: [
+      { role: 'user', content: 'Explain this math.' },
+      { role: 'assistant', content: 'canned answer' },
+      { role: 'user', content: 'wait, why does the variance shrink?' },
+    ] }],
+  });
+  assert.equal(H2.isUntouchedDemoDoc(engaged), false);
+});
+
+test('migrating a doc that also exists in the account merges the missing discussions', async () => {
+  cloudConfig();
+  // Account already has web::x with discussion 1.
+  const keyA = 'paperReader.docs.v2.' + USER_A.id;
+  app.localStorage.setItem(keyA, JSON.stringify({
+    'web::x': localDoc('web::x', { updated: 900, discussions: [{ id: 1, txt: 'account hl', messages: [] }] }),
+  }));
+  // Signed-out session added discussion 2 on the same paper.
+  app.localStorage.setItem('paperReader.docs.v2.local', JSON.stringify({
+    'web::x': localDoc('web::x', { updated: 1200, discussions: [
+      { id: 1, txt: 'account hl', messages: [] },
+      { id: 2, txt: 'local hl', messages: [{ role: 'user', content: 'q2' }] },
+    ] }),
+  }));
+
+  await PaperStore.init();
+  app.fakeSupabase.emitAuthChange('SIGNED_IN', sessionFor(USER_A));
+
+  const doc = app.plain(PaperStore.getStore()['web::x']);
+  assert.deepEqual(doc.discussions.map((d) => d.id), [1, 2]);
+  assert.equal(doc.discussions[0].txt, 'account hl', 'account copy wins for shared discussion');
+  assert.equal(doc.updated, 1200, 'updated bumps to the newer of the two');
+});
+
+test('migrated docs are pushed to the cloud by the post-sign-in refresh', async () => {
+  cloudConfig();
+  app.localStorage.setItem('paperReader.docs.v2.local', JSON.stringify({
+    'web::l1': localDoc('web::l1'),
+  }));
+
+  await PaperStore.init();
+  // A refresh kicked off by an earlier test may still be in flight;
+  // startCloudRefresh dedupes on it, so wait for quiescence first.
+  for (let i = 0; i < 50 && PaperStore.getSyncStatus().syncing; i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  app.fakeSupabase.clearCalls();
+  app.fakeSupabase.emitAuthChange('SIGNED_IN', sessionFor(USER_A));
+
+  // The cloud refresh runs async — poll a few microtask/timer ticks.
+  let upsert = null;
+  for (let i = 0; i < 20 && !upsert; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    upsert = app.fakeSupabase.state.calls.queries.find(
+      (q) => q.table === 'documents' && q.op === 'upsert' && q.rows && q.rows.id === 'web::l1',
+    );
+  }
+  assert.ok(upsert, 'migrated doc upserted to the documents table');
+  assert.equal(upsert.rows.owner_email, USER_A.id);
 });
 
 test('local caches are namespaced per user id and separated between accounts', async () => {

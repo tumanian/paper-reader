@@ -179,6 +179,41 @@ window.PaperStore = (function () {
     });
   }
 
+  // Raw-key variants (no idbKey namespacing) — used by the signed-out →
+  // signed-in migration, which moves blobs BETWEEN namespaces.
+  async function idbGetRaw(rawKey) {
+    const db = await openLocalIDB();
+    if (!db) return null;
+    return new Promise((res) => {
+      const tx = db.transaction('pdfs', 'readonly');
+      const r = tx.objectStore('pdfs').get(rawKey);
+      r.onsuccess = () => res(r.result ?? null);
+      r.onerror = () => res(null);
+    });
+  }
+
+  async function idbPutRaw(rawKey, value) {
+    const db = await openLocalIDB();
+    if (!db) return;
+    await new Promise((res) => {
+      const tx = db.transaction('pdfs', 'readwrite');
+      tx.objectStore('pdfs').put(value, rawKey);
+      tx.oncomplete = () => res();
+      tx.onerror = () => res();
+    });
+  }
+
+  async function idbDeleteRaw(rawKey) {
+    const db = await openLocalIDB();
+    if (!db) return;
+    await new Promise((res) => {
+      const tx = db.transaction('pdfs', 'readwrite');
+      tx.objectStore('pdfs').delete(rawKey);
+      tx.oncomplete = () => res();
+      tx.onerror = () => res();
+    });
+  }
+
   function docToRow(doc) {
     return {
       id: doc.id,
@@ -538,15 +573,117 @@ window.PaperStore = (function () {
     userId = identity ? identity.id : null;
   }
 
-  function loadLocalState() {
-    // Cloud configured but signed out: no personal library (onboarding only),
-    // but the read-later list is device-local and persists — addReadLater
-    // already writes it to the `.local` namespace while signed out.
-    if (supabase && !userId) {
-      docs = {};
-      readLater = loadLocalReadLater();
-      return;
+  // ── Signed-out → signed-in migration ────────────────────────────────────
+  // Design principle: signed-out is a full, device-local experience; signing
+  // in exists for cross-device transfer. So on sign-in, everything created
+  // while signed out (docs, discussions, read-later, PDF/figure blobs) moves
+  // into the account namespace, then the `.local` copies are cleared. One-way:
+  // local → account only. The cloud upload itself is handled by the normal
+  // refreshFromCloud push (it uploads local docs the cloud doesn't have yet);
+  // only PDF blobs need explicit handling here.
+
+  // Mirrors isUntouchedOnboardingDemo in js/onboarding.js (store.js is a plain
+  // script, it can't import from the module graph). A doc whose highlights are
+  // all pristine onboarding demos is seeded content, not user work — skip it.
+  const DEMO_PROMPTS = ['Explain this math.', 'Translate this formula to code.'];
+  function isUntouchedDemoDiscussion(d) {
+    if (!d || !d.onboarding) return false;
+    const msgs = d.messages || [];
+    if (msgs.length === 0) return true;
+    return msgs.length === 2
+      && msgs[0].role === 'user' && DEMO_PROMPTS.includes(msgs[0].content)
+      && msgs[1].role === 'assistant';
+  }
+  function isUntouchedDemoDoc(doc) {
+    const discs = doc && Array.isArray(doc.discussions) ? doc.discussions : [];
+    return discs.length > 0 && discs.every(isUntouchedDemoDiscussion);
+  }
+
+  function readLocalNamespace(base) {
+    try { return JSON.parse(localStorage.getItem(base + '.local')); }
+    catch { return null; }
+  }
+
+  // Synchronous localStorage move (docs + read-later); kicks off the async
+  // blob move. Runs on every transition to a signed-in session — a no-op when
+  // `.local` is empty, so it is safely idempotent.
+  function migrateLocalDataToAccount() {
+    if (!userId) return;
+    const localDocs = readLocalNamespace(STORE_BASE) || {};
+    const localRl = readLocalNamespace(READ_LATER_BASE);
+    const moved = [];
+
+    const mine = loadLocalDocs(); // account namespace (cloud merge comes later)
+    for (const [id, doc] of Object.entries(localDocs)) {
+      if (!doc || isUntouchedDemoDoc(doc)) continue;
+      const existing = mine[id];
+      if (!existing) {
+        mine[id] = doc;
+      } else {
+        // Same paper touched both signed out and in: keep the account copy,
+        // adopt any local discussions it doesn't have.
+        const have = new Set((existing.discussions || []).map((d) => d && d.id));
+        for (const d of doc.discussions || []) {
+          if (d && !have.has(d.id)) (existing.discussions = existing.discussions || []).push(d);
+        }
+        existing.updated = Math.max(existing.updated || 0, doc.updated || 0);
+      }
+      moved.push(doc);
     }
+    if (moved.length) saveLocalDocs(mine);
+
+    if (Array.isArray(localRl) && localRl.length) {
+      const rl = loadLocalReadLater();
+      const have = new Set(rl.map((i) => i.id));
+      let changed = false;
+      for (const item of localRl) {
+        if (item && !have.has(item.id)) { rl.push(item); changed = true; }
+      }
+      if (changed) {
+        rl.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+        saveLocalReadLater(rl);
+      }
+    }
+
+    try {
+      localStorage.removeItem(STORE_BASE + '.local');
+      localStorage.removeItem(READ_LATER_BASE + '.local');
+    } catch { /* clearing is best-effort */ }
+
+    if (moved.length) {
+      void migrateLocalBlobsToAccount(moved).catch((e) =>
+        console.warn('Local blob migration failed (docs migrated, PDFs may need re-upload):', e));
+    }
+  }
+
+  // Move IndexedDB blobs (PDF bytes + captured figures) from the `local::`
+  // namespace to the account's, and upload PDFs to cloud storage so the paper
+  // opens on other devices too. Best-effort.
+  async function migrateLocalBlobsToAccount(movedDocs) {
+    const uid = userId;
+    if (!uid) return;
+    for (const doc of movedDocs) {
+      const keys = [doc.id];
+      for (const d of doc.discussions || []) {
+        if (d && d.figure && d.figure.imageKey) keys.push(d.figure.imageKey);
+      }
+      for (const key of keys) {
+        const val = await idbGetRaw('local::' + key);
+        if (val == null) continue;
+        await idbPutRaw(uid + '::' + key, val);
+        await idbDeleteRaw('local::' + key);
+        if (key === doc.id && doc.mode === 'pdf' && useCloud && userId === uid) {
+          try { await putPdfToCloud(doc.id, val); }
+          catch (e) { console.warn('Migrated PDF upload failed for', doc.id, e); }
+        }
+      }
+    }
+  }
+
+  function loadLocalState() {
+    // Signed out (with or without cloud configured) reads the `.local`
+    // namespace: the signed-out experience is fully equivalent to signed-in,
+    // just device-local. Signing in migrates it — see migrateLocalDataToAccount.
     docs = loadLocalDocs();
     readLater = loadLocalReadLater();
   }
@@ -579,6 +716,7 @@ window.PaperStore = (function () {
       applySession(session);
       if (userId === prevUserId) { notifyChange(); return; }
       useCloud = !!(supabase && userId);
+      if (userId) migrateLocalDataToAccount();
       loadLocalState();
       notifyChange();
       if (useCloud) startCloudRefresh();
@@ -620,6 +758,9 @@ window.PaperStore = (function () {
       cleanAuthParamsFromUrl();
 
       useCloud = !!userId;
+      // Landing signed-in (e.g. back from the OAuth redirect) adopts whatever
+      // was created while signed out on this device.
+      if (userId) migrateLocalDataToAccount();
       loadLocalState();
       if (useCloud) startCloudRefresh();
       return getSyncStatus();
@@ -688,10 +829,12 @@ window.PaperStore = (function () {
 
   function isCloud() { return useCloud && !!userId; }
 
-  async function saveDoc(doc) {
-    // Signed out with cloud configured: personal saves are a no-op (prevents
-    // logout/backToUpload races from leaking signed-in data into .local).
-    if (supabase && !userId) return;
+  // `expectedUserId` (optional) is the user id the CALLER captured when it
+  // decided to save. If the session changed in between (sign-out event from
+  // another tab, logout race), the save is stale — drop it instead of leaking
+  // one namespace's data into another.
+  async function saveDoc(doc, expectedUserId) {
+    if (expectedUserId !== undefined && expectedUserId !== userId) return;
     docs[doc.id] = doc;
     saveLocalDocs(docs);
     if (!useCloud || !userId) return;
@@ -881,6 +1024,9 @@ window.PaperStore = (function () {
     getClient: () => supabase,
     // Pure helpers exposed for unit tests (no app behaviour depends on these
     // being public).
-    _internals: { identityFromSession, storageKeyForUser, userPathKey, legacyKeysToClear, dropLegacyData },
+    _internals: {
+      identityFromSession, storageKeyForUser, userPathKey, legacyKeysToClear, dropLegacyData,
+      isUntouchedDemoDoc, migrateLocalDataToAccount,
+    },
   };
 })();

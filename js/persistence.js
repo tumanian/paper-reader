@@ -171,6 +171,10 @@ export function loadStore() { return PaperStore.getStore(); }
 
 export async function persistCurrentDoc() {
   if (!currentDocId) return;
+  // Snapshot the owner now: if the session changes before the (async) save
+  // lands (logout race, sign-out in another tab), saveDoc drops the stale
+  // write instead of leaking this doc into the wrong namespace.
+  const owner = PaperStore.getUserId();
   const store = loadStore();
   const prior = store[currentDocId];
   if (prior && prior.discussions && prior.discussions.length > 0 && discussions.length === 0) {
@@ -200,7 +204,7 @@ export async function persistCurrentDoc() {
     })),
   };
   try {
-    await PaperStore.saveDoc(doc);
+    await PaperStore.saveDoc(doc, owner);
   } catch (e) {
     console.warn('Cloud save failed (local backup kept):', e);
     _onCloudSaveError();
