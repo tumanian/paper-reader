@@ -9,7 +9,7 @@ import {
 import { persistCurrentDoc, maybeUpdateSummary } from './persistence.js';
 import { addToReadLater, reopenDoc } from './library.js';
 import { loadWebPage, setStatus, buildPaperReferences } from './web-loader.js';
-import { parseCitation, parseParentheticalAuthorYear } from './citation-parse.js';
+import { parseCitation, parseParentheticalAuthorYear, parseBibliographyMetadata } from './citation-parse.js';
 import { loadCitationPreview, cancelCitationPreview } from './citation-resolve.js';
 import { normalizePdfSelectionText } from './pdf.js';
 
@@ -125,6 +125,15 @@ export async function finishCitationNavigation(ctx) {
   _selOpenChat(d.id);
 }
 
+function readLaterTitleForCitation(cite, fallbackText) {
+  if (cite?.citedTitle?.trim()) return cite.citedTitle.trim();
+  if (cite?.refText) {
+    const title = parseBibliographyMetadata(cite.refText).title?.trim();
+    if (title) return title;
+  }
+  return cite?.label || fallbackText.slice(0, 80);
+}
+
 async function openCitationPaper() {
   if (!pendingSel || !pendingCitation?.url) return;
   hidePopover();
@@ -137,7 +146,7 @@ async function openCitationPaper() {
     refText: pendingCitation.refText || '',
     url: pendingCitation.url,
   };
-  const citeLabel = pendingCitation.label;
+  const citeForLater = { ...pendingCitation };
 
   setPendingSel(null);
   setPendingCitation(null);
@@ -149,7 +158,7 @@ async function openCitationPaper() {
   } catch (e) {
     console.error(e);
     await addToReadLater({
-      title: citeLabel || ctx.citationText,
+      title: readLaterTitleForCitation(citeForLater, ctx.citationText),
       url: ctx.url,
       citationText: ctx.citationText,
       sourceDoc: ctx.parentName,
@@ -167,7 +176,7 @@ async function addSelectionToReadLater() {
 
   const cite = pendingCitation || parseCitation(pendingSel.txt);
   const added = await addToReadLater({
-    title: cite?.label || pendingSel.txt.slice(0, 80),
+    title: readLaterTitleForCitation(cite, pendingSel.txt),
     url: cite?.url || null,
     citationText: pendingSel.txt,
     sourceDoc: docMeta.name,

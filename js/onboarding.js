@@ -12,10 +12,10 @@ import { setPendingSel, setPendingCitation, clearDiscussions, addDiscussion } fr
 import { persistCurrentDoc } from './persistence.js';
 import { parseCitation, parseParentheticalAuthorYear } from './citation-parse.js';
 import { loadWebPage } from './web-loader.js';
-import { loadCitationPreview } from './citation-resolve.js';
+import { loadCitationPreview, seedOnboardingCitationCache } from './citation-resolve.js';
 import { positionPopover } from './selection.js';
 import { armFigureCapture, figureToast } from './figure.js';
-import { openChat, sendMessage, paintHighlight, renderList } from './chat.js';
+import { openChat, sendMessage, paintHighlight, renderList, playOnboardingCachedChat } from './chat.js';
 
 // Onboarding demo highlights auto-run the feature they advertise on first click,
 // so a first-time visitor sees citations / explain-math / to-code in action
@@ -35,6 +35,11 @@ export function runOnboardingDemo(d) {
   if (d.feature === 'math' || d.feature === 'code') {
     d.mathKind = d.feature === 'code' ? 'code' : 'explain';
     d.mathTex = d.tex || d.mathTex || null;
+    const cached = getOnboardingChatCache(activeOnboardingPaperId, d.feature);
+    if (cached) {
+      playOnboardingCachedChat(d, cached.user, cached.assistant);
+      return true;
+    }
     openChat(d.id);
     const input = document.getElementById('msg-input');
     input.value = d.feature === 'code' ? 'Translate this formula to code.' : 'Explain this math.';
@@ -72,12 +77,15 @@ function showOnboardingCitationDemo(d) {
 }
 
 let onboardingData = null;
+let onboardingActionCache = null;
+let activeOnboardingPaperId = null;
 // Tear-down handle for an in-flight onboarding highlight placement (its
 // MutationObserver + safety timer). Called when a new paper starts loading so
 // a stale observer can't fire against the next paper's DOM.
 let _onboardingCancel = null;
 export function cancelOnboardingPlacement() {
   if (_onboardingCancel) { try { _onboardingCancel(); } catch (_) {} _onboardingCancel = null; }
+  activeOnboardingPaperId = null;
 }
 let pendingOnboarding = null;
 
@@ -111,6 +119,60 @@ export function sanitizeOnboarding(json) {
     }
   }
   return out;
+}
+
+export function sanitizeOnboardingActionCache(json) {
+  const out = { papers: {} };
+  if (!json || typeof json !== 'object') return out;
+  if (!json.papers || typeof json.papers !== 'object') return out;
+  for (const [paperId, paper] of Object.entries(json.papers)) {
+    if (!paper || typeof paper !== 'object') continue;
+    const entry = { citations: {}, chat: {} };
+    if (paper.citations && typeof paper.citations === 'object') {
+      for (const [citeKey, citeVal] of Object.entries(paper.citations)) {
+        if (citeVal && typeof citeVal === 'object' && typeof citeVal.preview === 'string') {
+          entry.citations[citeKey] = citeVal;
+        }
+      }
+    }
+    if (paper.chat && typeof paper.chat === 'object') {
+      for (const feature of ['math', 'code', 'discuss']) {
+        const c = paper.chat[feature];
+        if (c && typeof c.user === 'string' && typeof c.assistant === 'string') {
+          entry.chat[feature] = { user: c.user, assistant: c.assistant };
+        }
+      }
+    }
+    if (Object.keys(entry.citations).length || Object.keys(entry.chat).length) {
+      out.papers[paperId] = entry;
+    }
+  }
+  return out;
+}
+
+export async function loadOnboardingActionCache() {
+  if (onboardingActionCache) return onboardingActionCache;
+  try {
+    const r = await fetch('/onboarding-action-cache.json', { cache: 'no-cache' });
+    onboardingActionCache = sanitizeOnboardingActionCache(await r.json());
+  } catch (e) {
+    console.warn('[Onboarding] could not load action cache:', e?.message);
+    onboardingActionCache = { papers: {} };
+  }
+  return onboardingActionCache;
+}
+
+function getOnboardingChatCache(paperId, feature) {
+  if (!paperId || !feature) return null;
+  return onboardingActionCache?.papers?.[paperId]?.chat?.[feature] || null;
+}
+
+function applyOnboardingActionCache(paperId) {
+  const cache = onboardingActionCache?.papers?.[paperId];
+  if (!cache) return;
+  if (cache.citations && Object.keys(cache.citations).length) {
+    seedOnboardingCitationCache(cache.citations);
+  }
 }
 
 export async function loadOnboardingData() {
@@ -209,7 +271,12 @@ function rectsForRange(range, wrapperEl) {
 export function maybeApplyOnboardingCuration() {
   const paper = pendingOnboarding;
   pendingOnboarding = null;
-  if (!paper || currentMode !== 'web' || !Array.isArray(paper.items)) return;
+  if (!paper || currentMode !== 'web' || !Array.isArray(paper.items)) {
+    activeOnboardingPaperId = null;
+    return;
+  }
+  activeOnboardingPaperId = paper.paperId || null;
+  applyOnboardingActionCache(activeOnboardingPaperId);
   if (discussions.length > 0) {
     // Reopened. If the visitor never engaged (every highlight is an untouched
     // onboarding demo), refresh from the latest curation so edits/new feature

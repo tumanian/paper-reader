@@ -106,6 +106,15 @@ export function writeCitationLogEntry(key, patch) {
   return store[key];
 }
 
+// Pre-seed citation log entries for onboarding demos (static cache → instant preview).
+export function seedOnboardingCitationCache(entries) {
+  if (!entries || typeof entries !== 'object') return;
+  for (const [citationText, patch] of Object.entries(entries)) {
+    if (!patch || typeof patch !== 'object') continue;
+    writeCitationLogEntry(citeLogKey(citationText), patch);
+  }
+}
+
 export function logCitation(outcome, stage, data) {
   const msg = `[CitationLookup] ${outcome} · ${stage}`;
   if (outcome === 'fail' || outcome === 'expired') console.warn(msg, data);
@@ -482,6 +491,7 @@ export async function loadCitationPreview() {
       url: cachedPreview.url,
       refText: cachedPreview.refText || expandedSelection,
       label: expandedSelection,
+      citedTitle: cachedPreview.citedTitle || null,
       matchId: cachedPreview.matchId,
     });
     citeBtn.style.display = cachedPreview.url ? 'flex' : 'none';
@@ -560,6 +570,7 @@ export async function loadCitationPreview() {
       url: ref.url,
       refText: ref.text,
       label: expandedSelection,
+      citedTitle: bibMeta.title || null,
       matchId: ref.id,
       authors: ayMeta?.authorPart || bibMeta.authors || null,
       year: ayMeta?.yearStr || bibMeta.year || null,
@@ -627,6 +638,8 @@ export async function loadCitationPreview() {
 
     const citedTitle = (abstractOk && cited.title) ? cited.title : (bibMeta.title || ref.text.slice(0, 80));
     const citedText = abstractOk ? cited.text : ref.text;
+    cite.citedTitle = citedTitle;
+    setPendingCitation(cite);
 
     el.textContent = 'Summarizing relevance…';
     const previewPayload = {

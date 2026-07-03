@@ -111,6 +111,19 @@ export function openChat(id) {
   input.focus();
 }
 
+// Inject a pre-cached user/assistant exchange for onboarding demos (no API round-trip).
+export function playOnboardingCachedChat(d, userText, assistantText) {
+  if (!d || !userText || !assistantText) return false;
+  openChat(d.id);
+  d.messages.push({ role: 'user', content: userText });
+  d.messages.push({ role: 'assistant', content: assistantText });
+  persistCurrentDoc();
+  scheduleSummaryUpdate();
+  rebuildChat(d);
+  renderList();
+  return true;
+}
+
 // Bring the reader to the highlight for a discussion (PDF page or web article).
 export function scrollHighlightIntoView(d) {
   if (!d) return;

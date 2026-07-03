@@ -8,7 +8,7 @@ import { setCitationResolveHooks, logCitation, ensureCitationFormat } from './ci
 import { initSelection, setSelectionHooks, updateReturnButton, finishCitationNavigation } from './selection.js';
 import { initFigure, setFigureHooks } from './figure.js';
 import { initChat, setChatHooks, paintHighlight, renderList, openChat, sendMessage, showList, findNearbyContext } from './chat.js';
-import { runOnboardingDemo, cancelOnboardingPlacement, maybeApplyOnboardingCuration, getFeaturedPaper, openFeaturedExample, loadOnboardingData } from './onboarding.js';
+import { runOnboardingDemo, cancelOnboardingPlacement, maybeApplyOnboardingCuration, getFeaturedPaper, openFeaturedExample, loadOnboardingData, loadOnboardingActionCache } from './onboarding.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -122,7 +122,7 @@ setChatHooks({
   initChat();
   const info = await PaperStore.init();
   updateAuthBar(info);
-  await loadOnboardingData();
+  await Promise.all([loadOnboardingData(), loadOnboardingActionCache()]);
   renderLibrary();
   renderReadLater();
   renderList();
