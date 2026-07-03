@@ -175,21 +175,22 @@ async function openCitationPaper() {
 
 async function addSelectionToReadLater() {
   if (!pendingSel) return;
-  // Guard: only a resolved citation (real title + link) may be saved. The button
-  // is hidden until then, but never trust the UI state alone.
+  // Guard: only a citation resolved to a real bibliography title may be saved
+  // (prevents dummy entries from pre-resolution clicks). A link is optional —
+  // linkless items keep a docId fallback so the source paper can resolve them.
   const cite = pendingCitation;
-  if (!cite?.url || !cite?.citedTitle) return;
+  if (!cite?.citedTitle) return;
   hidePopover();
   window.getSelection()?.removeAllRanges();
 
   const added = await addToReadLater({
     title: readLaterTitleForCitation(cite, pendingSel.txt),
-    url: cite.url,
+    url: cite.url || null,
     citationText: pendingSel.txt,
     sourceDoc: docMeta.name,
     refText: cite?.refText || null,
-    docId: null,
-    mode: 'web',
+    docId: cite.url ? null : currentDocId,
+    mode: cite.url ? 'web' : docMeta.mode,
   });
 
   setPendingSel(null);

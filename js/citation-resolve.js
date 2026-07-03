@@ -501,7 +501,7 @@ export async function loadCitationPreview() {
     });
     citeBtn.style.display = cachedPreview.url ? 'flex' : 'none';
     citeBtn.textContent = '📖 Open citation';
-    readLaterBtn.style.display = (cachedPreview.url && cachedPreview.citedTitle) ? 'flex' : 'none';
+    readLaterBtn.style.display = cachedPreview.citedTitle ? 'flex' : 'none';
     el.classList.remove('loading');
     el.innerHTML =
       `<div class="cite-preview-title">${esc(cachedPreview.citedTitle || 'Cited paper')}</div>` +
@@ -647,7 +647,7 @@ export async function loadCitationPreview() {
     const citedText = abstractOk ? cited.text : ref.text;
     cite.citedTitle = citedTitle;
     setPendingCitation(cite);
-    readLaterBtn.style.display = (cite.url && citedTitle) ? 'flex' : 'none';
+    readLaterBtn.style.display = citedTitle ? 'flex' : 'none';
     _crRepositionPopover();
 
     el.textContent = 'Summarizing relevance…';
