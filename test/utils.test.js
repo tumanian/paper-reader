@@ -186,3 +186,35 @@ test('isTodoValue flags empty and TODO-prefixed strings', () => {
 test('normalizeForMatch collapses whitespace and trims', () => {
   assert.equal(app.normalizeForMatch('  a\n b   c '), 'a b c');
 });
+
+// ── resolveMediaUrl (figure capture + web article rendering) ─────────────────
+test('resolveMediaUrl absolutizes root-relative paths against the page URL', () => {
+  const base = 'https://ar5iv.org/abs/1706.03762';
+  assert.equal(
+    app.resolveMediaUrl('/html/1706.03762/assets/Figures/ModalNet-21.png', base),
+    'https://ar5iv.org/html/1706.03762/assets/Figures/ModalNet-21.png',
+  );
+});
+
+test('resolveMediaUrl leaves absolute and data URLs untouched', () => {
+  const abs = 'https://cdn.example.com/fig.png';
+  const data = 'data:image/png;base64,AAA';
+  assert.equal(app.resolveMediaUrl(abs, 'https://ar5iv.org/abs/1'), abs);
+  assert.equal(app.resolveMediaUrl(data, 'https://ar5iv.org/abs/1'), data);
+});
+
+test('resolveMediaUrl returns the original src when base is missing or invalid', () => {
+  assert.equal(app.resolveMediaUrl('/fig.png', ''), '/fig.png');
+  assert.equal(app.resolveMediaUrl('/fig.png', 'not a url'), '/fig.png');
+});
+
+test('resolveMediaUrl remaps localhost ar5iv asset paths to ar5iv.org', () => {
+  assert.equal(
+    app.resolveMediaUrl('http://localhost:3000/html/1706.03762/assets/Figures/ModalNet-21.png', ''),
+    'https://ar5iv.org/html/1706.03762/assets/Figures/ModalNet-21.png',
+  );
+  assert.equal(
+    app.resolveMediaUrl('/html/1706.03762/assets/Figures/ModalNet-21.png', 'http://localhost:3000/'),
+    'https://ar5iv.org/html/1706.03762/assets/Figures/ModalNet-21.png',
+  );
+});

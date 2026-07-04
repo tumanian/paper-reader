@@ -67,7 +67,7 @@ const SHIM = `
       significantTitleWords, parseBibliographyMetadata, scoreCrossrefItem, verifyFetchedPaperAgainstBib,
       sanitizeCitationFormat, buildFallbackCitationFormat, matchWithStoredFormat, authorTokens, refMatchesAuthorTokens, matchCitationToReferences,
       shouldTryCitationPreview, findNearbyContext, buildPaperBlock, buildDocContext,
-      esc, renderPreviewHtml, md, timeAgo,
+      esc, renderPreviewHtml, md, timeAgo, resolveMediaUrl,
       sanitizeOnboarding, sanitizeOnboardingActionCache, isTodoValue, normalizeForMatch, getFeaturedPaper,
       buildPaperReferences, parseReferencesFromSection, parseAuthorYearReferenceLines, expandSelectionText,
       initStorage, loadStore, persistCurrentDoc,

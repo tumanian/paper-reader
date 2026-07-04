@@ -196,3 +196,60 @@ test('handleFetchRequest rejects private / loopback / non-http targets', async (
     assert.equal(r.status, 400, `expected 400 for ${bad}`);
   }
 });
+
+test('handleFetchImageRequest rejects private / loopback / non-http targets', async () => {
+  for (const bad of ['http://localhost/x', 'http://127.0.0.1/y', 'http://10.0.0.5/z', 'ftp://example.com', 'not a url']) {
+    const r = await handler.handleFetchImageRequest(bad);
+    assert.equal(r.status, 400, `expected 400 for ${bad}`);
+  }
+});
+
+test('handleFetchImageRequest returns image bytes and content-type on success', async () => {
+  const png = Buffer.alloc(128, 0xab);
+  png[0] = 0x89; png[1] = 0x50; png[2] = 0x4e; png[3] = 0x47;
+  const cap = {};
+  global.fetch = async (url, opts) => {
+    cap.url = url;
+    cap.opts = opts;
+    return {
+      ok: true,
+      status: 200,
+      url: 'https://cdn.example.com/fig.png',
+      headers: { get: (k) => (k === 'content-type' ? 'image/png' : null) },
+      arrayBuffer: async () => png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength),
+    };
+  };
+  const r = await handler.handleFetchImageRequest('https://ar5iv.org/html/1706.03762/assets/Figures/ModalNet-21.png');
+  assert.equal(r.status, 200);
+  assert.equal(r.contentType, 'image/png');
+  assert.equal(r.finalUrl, 'https://cdn.example.com/fig.png');
+  assert.ok(Buffer.isBuffer(r.body));
+  assert.equal(r.body.length, png.length);
+  assert.match(cap.opts.headers.Accept, /image\/\*/);
+});
+
+test('handleFetchImageRequest rejects upstream non-image content', async () => {
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    url: 'https://example.com/oops',
+    headers: { get: () => 'text/html' },
+    arrayBuffer: async () => Buffer.alloc(128, 0x3c),
+  });
+  const r = await handler.handleFetchImageRequest('https://example.com/not-an-image');
+  assert.equal(r.status, 502);
+  assert.match(r.json.error, /did not return an image/i);
+});
+
+test('handleFetchImageRequest rejects an empty upstream body', async () => {
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    url: 'https://example.com/tiny.png',
+    headers: { get: () => 'image/png' },
+    arrayBuffer: async () => Buffer.alloc(8),
+  });
+  const r = await handler.handleFetchImageRequest('https://example.com/tiny.png');
+  assert.equal(r.status, 502);
+  assert.match(r.json.error, /empty image/i);
+});

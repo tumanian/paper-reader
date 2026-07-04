@@ -266,7 +266,8 @@ function startMathDiscussion(kind) {
   const d = { id:Date.now(), txt:sel.txt, mode:sel.mode,
                pageNum:sel.pageNum, color:nextColor(), wrapper:sel.wrapper,
                relRects:sel.relRects, messages:[],
-               mathKind:kind, mathTex:(sel.math && sel.math.tex) || null };
+               mathKind:kind, mathTex:(sel.math && sel.math.tex) || null,
+               _range: sel.mode === 'web' ? sel.range.cloneRange() : null };
   addDiscussion(d);
   setPendingSel(null);
   setPendingCitation(null);
@@ -387,7 +388,8 @@ export function initSelection() {
 
     const d = { id:Date.now(), txt:pendingSel.txt, mode:pendingSel.mode,
                  pageNum:pendingSel.pageNum, color:nextColor(), wrapper:pendingSel.wrapper,
-                 relRects:pendingSel.relRects, messages:[] };
+                 relRects:pendingSel.relRects, messages:[],
+                 _range: pendingSel.mode === 'web' ? pendingSel.range.cloneRange() : null };
     addDiscussion(d);
     setPendingSel(null);
     setPendingCitation(null);

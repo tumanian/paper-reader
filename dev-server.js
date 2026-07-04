@@ -7,7 +7,7 @@
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
-const { handleChatRequest, handleFetchRequest, handleFetchPdfRequest } = require('./handler');
+const { handleChatRequest, handleFetchRequest, handleFetchPdfRequest, handleFetchImageRequest } = require('./handler');
 
 const PORT = process.env.PORT || 3000;
 
@@ -38,6 +38,26 @@ const server = http.createServer(async (req, res) => {
     if (result.body) {
       const headers = {
         'Content-Type': result.contentType || 'application/pdf',
+        'Access-Control-Allow-Origin': '*',
+      };
+      if (result.finalUrl) headers['X-Final-Url'] = result.finalUrl;
+      res.writeHead(result.status, headers);
+      res.end(result.body);
+      return;
+    }
+    res.writeHead(result.status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(result.json));
+    return;
+  }
+
+  // ── Image fetch proxy (figure capture — avoids browser CORS taint) ──
+  if (req.url.startsWith('/api/fetch-image') && req.method === 'GET') {
+    const u = new URL(req.url, 'http://localhost');
+    const target = u.searchParams.get('url');
+    const result = await handleFetchImageRequest(target);
+    if (result.body) {
+      const headers = {
+        'Content-Type': result.contentType || 'image/png',
         'Access-Control-Allow-Origin': '*',
       };
       if (result.finalUrl) headers['X-Final-Url'] = result.finalUrl;

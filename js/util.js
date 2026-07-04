@@ -41,6 +41,37 @@ export function asGlobalRegex(re) {
 }
 export function isTodoValue(s) { return !s || /^\s*TODO/i.test(String(s)); }
 export function normalizeForMatch(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
+// Turn a root-relative or page-relative media URL into an absolute https URL.
+// Used when rendering web articles and when fetching figure images for capture.
+export function resolveMediaUrl(src, baseUrl) {
+  const s = String(src || '').trim();
+  if (!s || /^data:/i.test(s)) return s;
+
+  const base = String(baseUrl || '').trim();
+  let url;
+  try {
+    if (/^https?:\/\//i.test(s)) {
+      url = new URL(s);
+    } else if (base) {
+      url = new URL(s, base);
+    } else if (/^\/html\/[\d.]+(?:v\d+)?\//i.test(s)) {
+      url = new URL(s, 'https://ar5iv.org/');
+    } else {
+      return s;
+    }
+  } catch (_) {
+    return s;
+  }
+
+  const host = url.hostname.toLowerCase();
+  const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.local');
+  // ar5iv HTML assets (/html/<id>/...) must be fetched from ar5iv, not localhost.
+  if (isLoopback && /^\/html\/[\d.]+(?:v\d+)?\//i.test(url.pathname)) {
+    return `https://ar5iv.org${url.pathname}${url.search}`;
+  }
+
+  return url.href;
+}
 export function decodeXmlText(s) {
   if (!s) return '';
   const el = document.createElement('textarea');

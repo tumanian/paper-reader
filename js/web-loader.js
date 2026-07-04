@@ -1,9 +1,9 @@
 // Web page + arXiv loading, article rendering, and reference/bibliography
 // extraction. Depends on the pure citation core for reference resolution.
 
-import { esc, decodeXmlText } from './util.js';
+import { esc, decodeXmlText, resolveMediaUrl, normalizeForMatch } from './util.js';
 import {
-  docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions,
+  docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions, currentMode,
   MAX_PAPER_CHARS,
   setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat,
   setBibByNumber, setPaperRefText, setPaperText, setPaperReferences,
@@ -49,6 +49,22 @@ export function initWebLoader() {
   document.getElementById('url-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') { const v = e.target.value.trim(); if(v) loadWebPage(v); }
   });
+
+  // Web highlights are positioned from layout-derived rects — reflow them when
+  // the article column changes width (window resize, sidebar collapse, etc.).
+  let repaintTimer = null;
+  const scheduleRepaintWebHighlights = () => {
+    clearTimeout(repaintTimer);
+    repaintTimer = setTimeout(() => repaintWebHighlights(), 120);
+  };
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(scheduleRepaintWebHighlights);
+    for (const id of ['main-app', 'viewer-panel', 'article-wrapper']) {
+      const el = document.getElementById(id);
+      if (el) ro.observe(el);
+    }
+  }
+  window.addEventListener('resize', scheduleRepaintWebHighlights);
 }
 
 export async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
@@ -269,6 +285,14 @@ export function renderWebArticle(title, html, url) {
   document.getElementById('article-body').innerHTML = html;
   document.getElementById('paper-name').textContent = title || url;
   document.querySelectorAll('#article-body script').forEach(s => s.remove());
+  // Resolve relative figure/media URLs against the source page so images load
+  // and figure capture can fetch them (root-relative /html/... paths otherwise
+  // resolve to localhost and break cross-origin rasterization).
+  document.querySelectorAll('#article-body img[src]').forEach((img) => {
+    const raw = img.getAttribute('src');
+    const abs = resolveMediaUrl(raw, url);
+    if (abs) img.src = abs;
+  });
   // capture full text for context + caching
   const bodyText = document.getElementById('article-body').innerText || '';
   setPaperText((`${title || ''}\n\n${bodyText}`).slice(0, MAX_PAPER_CHARS));
@@ -521,13 +545,112 @@ export function indexWebBibliography() {
   ).forEach((item) => addBibliographyItem(item));
 }
 
-export function restoreWebHighlights() {
+// Locate a verbatim snippet in a rendered container and return a DOM Range.
+export function locateTextRange(root, snippet) {
+  const target = normalizeForMatch(snippet).toLowerCase();
+  if (!root || target.length < 4) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      const p = n.parentElement;
+      if (p && p.closest('script,style,.highlights-layer')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let full = '';
+  const map = [];
+  let n;
+  while ((n = walker.nextNode())) {
+    const raw = n.nodeValue;
+    let prevSpace = full.length > 0 && full[full.length - 1] === ' ';
+    for (let i = 0; i < raw.length; i++) {
+      if (/\s/.test(raw[i])) {
+        if (prevSpace) continue;
+        full += ' '; map.push({ node: n, offset: i }); prevSpace = true;
+      } else {
+        full += raw[i].toLowerCase(); map.push({ node: n, offset: i }); prevSpace = false;
+      }
+    }
+    if (!prevSpace) { full += ' '; map.push({ node: n, offset: raw.length }); }
+  }
+  const idx = full.indexOf(target);
+  if (idx === -1) return null;
+  const startPos = map[idx];
+  const endPos = map[idx + target.length - 1];
+  if (!startPos || !endPos) return null;
+  try {
+    const range = document.createRange();
+    range.setStart(startPos.node, startPos.offset);
+    range.setEnd(endPos.node, endPos.offset + 1);
+    return range;
+  } catch (_) { return null; }
+}
+
+export function rectsForRange(range, wrapperEl) {
+  const wrap = wrapperEl.getBoundingClientRect();
+  return Array.from(range.getClientRects())
+    .filter((r) => r.width > 1)
+    .map((r) => ({ left: r.left - wrap.left, top: r.top - wrap.top, width: r.width, height: r.height }));
+}
+
+function rangeIsConnected(range) {
+  try { return !!range?.commonAncestorContainer?.isConnected; } catch (_) { return false; }
+}
+
+function locateTextRangeFuzzy(root, snippet) {
+  const norm = normalizeForMatch(snippet);
+  if (!norm || norm.length < 4) return null;
+  let range = locateTextRange(root, norm);
+  if (range) return range;
+  for (const len of [120, 80, 48, 32]) {
+    if (norm.length <= len) continue;
+    range = locateTextRange(root, norm.slice(0, len));
+    if (range) return range;
+  }
+  return null;
+}
+
+function relocateWebDiscussionRects(d, aw, body) {
+  if (!d || d.mode !== 'web' || !aw || !body) return;
+  if (d.figure) return;
+
+  // Live DOM Range survives reflow — re-measure its client rects.
+  if (d._range && rangeIsConnected(d._range)) {
+    const rects = rectsForRange(d._range, aw);
+    if (rects.length) { d.relRects = rects; return; }
+  }
+
+  if (!d.txt || d.txt.length < 4) return;
+  const range = locateTextRangeFuzzy(body, d.txt);
+  if (!range) return;
+  const rects = rectsForRange(range, aw);
+  if (rects.length) {
+    d.relRects = rects;
+    d._range = range;
+  }
+}
+
+export function repaintWebHighlights() {
+  if (currentMode !== 'web') return;
   const aw = document.getElementById('article-wrapper');
+  const body = document.getElementById('article-body');
+  if (!aw || !body) return;
+  const layer = aw.querySelector('.highlights-layer');
+  if (layer) layer.innerHTML = '';
   for (const d of discussions) {
     if (d.mode !== 'web') continue;
     d.wrapper = aw;
+    relocateWebDiscussionRects(d, aw, body);
+    // Figure captures are pixel-fixed drag boxes — they cannot follow reflow and
+    // paint misleading strips over unrelated text at new widths. The captured
+    // image still appears in the discussion thread.
+    if (d.figure) continue;
     _wlPaintHighlight(d);
   }
+}
+
+export function restoreWebHighlights() {
+  repaintWebHighlights();
 }
 
 export function startApp(name, badge) {

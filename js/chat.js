@@ -10,6 +10,7 @@ import { discussions, activeId, currentDocId, docMeta, paperText, MAX_PAPER_CHAR
 import { setActiveId, removeDiscussion } from './state.js';
 import { persistCurrentDoc, scheduleSummaryUpdate } from './persistence.js';
 import { renderChatFigure, ensureFigureImage } from './figure.js';
+import { repaintWebHighlights } from './web-loader.js';
 
 // Onboarding demo highlights auto-run the feature they advertise on first click,
 // so a first-time visitor sees citations / explain-math / to-code in action
@@ -26,6 +27,8 @@ export function paintHighlight(d) {
   const layer = d.wrapper?.querySelector('.highlights-layer');
   if (!layer) return;
   for (const r of d.relRects) {
+    // Stale pixel rects can collapse into tall slivers after reflow — skip them.
+    if (r.height > 120 && r.width < r.height * 0.15) continue;
     const div = document.createElement('div');
     div.className = 'hl-rect';
     div.dataset.discId = d.id;
@@ -145,6 +148,9 @@ export function setSidebarCollapsed(collapsed) {
   if (!main || !sidebar) return;
   main.classList.toggle('sidebar-collapsed', collapsed);
   sidebar.classList.toggle('collapsed', collapsed);
+  // Sidebar width change reflows the article column — re-anchor highlights.
+  requestAnimationFrame(() => repaintWebHighlights());
+  setTimeout(() => repaintWebHighlights(), 220); // after width transition (.2s)
 }
 
 // ═══════════════════════════════════════════════════════

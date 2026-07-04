@@ -11,7 +11,7 @@ import { currentMode, discussions, nextColor } from './state.js';
 import { setPendingSel, setPendingCitation, clearDiscussions, addDiscussion } from './state.js';
 import { persistCurrentDoc } from './persistence.js';
 import { parseCitation, parseParentheticalAuthorYear } from './citation-parse.js';
-import { loadWebPage } from './web-loader.js';
+import { loadWebPage, locateTextRange, rectsForRange } from './web-loader.js';
 import { loadCitationPreview, seedOnboardingCitationCache } from './citation-resolve.js';
 import { positionPopover } from './selection.js';
 import { armFigureCapture, figureToast, FIGURE_CAPTURE_ENABLED } from './figure.js';
@@ -226,52 +226,7 @@ export async function openOnboardingPaper(paper) {
 // Walks text nodes, builds a whitespace-normalized concatenation with a char→
 // (node, offset) map, finds the snippet, and rebuilds a Range. Returns null if
 // not found (caller skips silently).
-export function locateTextRange(root, snippet) {
-  const target = normalizeForMatch(snippet).toLowerCase();
-  if (!root || target.length < 4) return null;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(n) {
-      if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-      const p = n.parentElement;
-      if (p && p.closest('script,style,.highlights-layer')) return NodeFilter.FILTER_REJECT;
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-  let full = '';
-  const map = [];
-  let n;
-  while ((n = walker.nextNode())) {
-    const raw = n.nodeValue;
-    let prevSpace = full.length > 0 && full[full.length - 1] === ' ';
-    for (let i = 0; i < raw.length; i++) {
-      if (/\s/.test(raw[i])) {
-        if (prevSpace) continue;
-        full += ' '; map.push({ node: n, offset: i }); prevSpace = true;
-      } else {
-        full += raw[i].toLowerCase(); map.push({ node: n, offset: i }); prevSpace = false;
-      }
-    }
-    if (!prevSpace) { full += ' '; map.push({ node: n, offset: raw.length }); }
-  }
-  const idx = full.indexOf(target);
-  if (idx === -1) return null;
-  const startPos = map[idx];
-  const endPos = map[idx + target.length - 1];
-  if (!startPos || !endPos) return null;
-  try {
-    const range = document.createRange();
-    range.setStart(startPos.node, startPos.offset);
-    range.setEnd(endPos.node, endPos.offset + 1);
-    return range;
-  } catch (_) { return null; }
-}
-
-function rectsForRange(range, wrapperEl) {
-  const wrap = wrapperEl.getBoundingClientRect();
-  return Array.from(range.getClientRects())
-    .filter((r) => r.width > 1)
-    .map((r) => ({ left: r.left - wrap.left, top: r.top - wrap.top, width: r.width, height: r.height }));
-}
+// locateTextRange + rectsForRange live in web-loader.js (shared with resize reflow).
 
 // Formula snippets anchor on the prose right before an equation (MathML isn't
 // text-locatable), so the highlight would visually miss the math. Find the
@@ -374,6 +329,7 @@ function applyOnboardingItems(items) {
           txt: normalizeForMatch(range.toString()),
           mode: 'web', pageNum: null, color: nextColor(), wrapper: aw,
           relRects, messages: [],
+          _range: range.cloneRange(),
           note: item.note || null, onboarding: true,
           feature, tex: item.tex || null, cite: item.cite || null,
           // Stamp math metadata at placement (not first click) so the formula
