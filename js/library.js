@@ -226,7 +226,13 @@ export async function reopenDoc(docId) {
 // ═══════════════════════════════════════════════════════
 //  AUTH  (login widget + sync status — real Supabase session)
 // ═══════════════════════════════════════════════════════
+function isUploadScreenVisible() {
+  const upload = document.getElementById('upload-screen');
+  return upload && upload.style.display !== 'none';
+}
+
 export function updateAuthBar(info) {
+  const loginWidget = document.getElementById('login-widget');
   const btn = document.getElementById('login-btn');
   const label = btn && btn.querySelector('.lw-label');
   const statusEl = document.getElementById('login-status');
@@ -291,6 +297,13 @@ export function updateAuthBar(info) {
   // Sign-in is only possible when a Supabase project is configured.
   if (signinBtn) signinBtn.style.display = signedIn || localOnly ? 'none' : 'flex';
   logoutBtn.style.display = signedIn ? 'block' : 'none';
+
+  // Signed-out sign-in lives on the upload screen only — hide the widget in the reader.
+  if (loginWidget) {
+    const hideWidget = !signedIn && !isUploadScreenVisible();
+    loginWidget.style.display = hideWidget ? 'none' : '';
+    if (hideWidget) loginWidget.classList.remove('open');
+  }
 }
 
 // Starts the Google OAuth redirect via Supabase Auth. The page navigates away

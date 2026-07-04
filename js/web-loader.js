@@ -10,7 +10,7 @@ import {
   setActiveId, setPendingSel, setCitationFormatPromise,
 } from './state.js';
 import { docIdFor, loadStore, restoreDiscussions, loadDocSummary, persistCurrentDoc } from './persistence.js';
-import { renderLibrary, updateAuthBar } from './library.js';
+import { renderLibrary, updateAuthBar, updateLogoutFab } from './library.js';
 import { renderFromBuffer, restoreHighlightsForLoadedPages } from './pdf.js';
 import { extractReferencesSection, resolveReferenceEntry } from './citation-parse.js';
 
@@ -546,6 +546,7 @@ export function startApp(name, badge) {
   setPaperReferences([]);
   setCitationFormat(null);
   setCitationFormatPromise(null);
+  updateLogoutFab();
 }
 
 export function setStatus(msg) { document.getElementById('load-status').textContent = msg; }

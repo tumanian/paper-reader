@@ -47,6 +47,7 @@ function backToUpload() {
   document.getElementById('upload-screen').style.display='flex';
   showList();
   renderLibrary();
+  updateAuthBar(PaperStore.getSyncStatus());
 }
 
 
