@@ -10,6 +10,15 @@ import { initFigure, setFigureHooks } from './figure.js';
 import { initChat, setChatHooks, paintHighlight, renderList, openChat, sendMessage, showList, findNearbyContext, setSidebarCollapsed } from './chat.js';
 import { runOnboardingDemo, cancelOnboardingPlacement, maybeApplyOnboardingCuration, getFeaturedPaper, openFeaturedExample, loadOnboardingData, loadOnboardingActionCache } from './onboarding.js';
 
+// Initialize Vercel Web Analytics — only in browser, not in tests
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  import('@vercel/analytics').then(analytics => {
+    analytics.inject();
+  }).catch(() => {
+    // Analytics module not available (e.g., in test environment)
+  });
+}
+
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
