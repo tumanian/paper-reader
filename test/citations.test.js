@@ -303,22 +303,53 @@ test('parseReferencesFromSection splits alpha-bracket bibliographies with string
   assert.deepEqual(app.state.paperReferences.map((r) => r.id), ['Vas17', 'BLM+20', 'Foo19']);
 });
 
-test('parseReferencesWithPattern splits entries and captures labels', () => {
-  const section =
-    '[R1] First reference entry with plenty of characters. 2001.\n' +
-    '[R2] Second reference entry with plenty of characters. 2002.\n' +
-    '[R3] Third reference entry with plenty of characters. 2003.\n' +
-    '[R4] Fourth reference entry with plenty of characters. 2004.';
-  const refs = app.parseReferencesWithPattern(section, { regex: '^\\[(R\\d+)\\]', flags: 'gm', labelGroup: 1 });
-  assert.equal(refs.length, 4);
-  assert.deepEqual(plain(refs.map((r) => r.id)), ['R1', 'R2', 'R3', 'R4']);
-  assert.match(refs[2].text, /Third reference entry/);
+test('mergeWrappedRefLines reassembles wrapped bibliography entries', () => {
+  const lines = [
+    'Rie Kubota Ando and Tong Zhang. 2005. A frame-',
+    'work for learning predictive structures from multi-',
+    'ple tasks and unlabeled data. Journal of Machine',
+    'Learning Research, 6:1817-1853.',
+    'Luisa Bentivogli, Peter Clark, Ido Dagan, and Danilo',
+    'Giampiccolo. 2009. The fifth pascal recognizing',
+    'textual entailment challenge. In TAC.',
+  ];
+  const merged = plain(app.mergeWrappedRefLines(lines));
+  assert.equal(merged.length, 2);
+  assert.match(merged[0], /framework for learning predictive structures from multiple tasks/);
+  assert.match(merged[1], /^Luisa Bentivogli.*In TAC\.$/);
 });
 
-test('parseReferencesWithPattern rejects patterns matching fewer than 3 entries or invalid regexes', () => {
-  const section = '[R1] First reference entry, long enough. 2001.\n[R2] Second reference entry, long enough. 2002.';
-  assert.deepEqual(plain(app.parseReferencesWithPattern(section, { regex: '^\\[(R\\d+)\\]', flags: 'gm', labelGroup: 1 })), []);
-  assert.deepEqual(plain(app.parseReferencesWithPattern(section, { regex: '(', flags: 'gm', labelGroup: 1 })), []);
+test('parseAuthorYearReferenceLines handles a wrapped two-column PDF bibliography (BERT-style)', () => {
+  const section = [
+    'Jacob Devlin, Ming-Wei Chang, Kenton Lee, and',
+    'Kristina Toutanova. 2018. Bert: Pre-training of',
+    'deep bidirectional transformers for language under-',
+    'standing. arXiv preprint arXiv:1810.04805.',
+    '[Page 12]',
+    'Matthew Peters, Mark Neumann, Mohit Iyyer, Matt',
+    'Gardner, Christopher Clark, Kenton Lee, and Luke',
+    'Zettlemoyer. 2018. Deep contextualized word rep-',
+    'resentations. In Proceedings of NAACL.',
+  ].join('\n');
+  app.parseAuthorYearReferenceLines(section);
+  const refs = app.state.paperReferences;
+  assert.equal(refs.length, 2);
+  assert.match(refs[0].text, /language understanding/); // de-hyphenated
+  // The reassembled entries make author-year matching work again.
+  const m = app.matchCitationToReferences('(Peters et al., 2018)', refs);
+  assert.equal(m?.isCitation, true);
+  assert.equal(m?.matchId, refs[1].id);
+});
+
+test('buildPaperReferences prefers a cached Haiku-extracted bibliography', () => {
+  app.state.extractedReferences = [
+    { id: 1, text: 'Devlin et al. 2018. BERT. arXiv preprint arXiv:1810.04805.', url: null },
+    { id: 2, text: 'Peters et al. 2018. Deep contextualized word representations.', url: null },
+  ];
+  app.state.bibByNumber = { 7: { url: null, refText: 'should not be used', label: 'x' } };
+  app.buildPaperReferences();
+  assert.equal(app.state.paperReferences.length, 2);
+  assert.match(app.state.paperReferences[0].text, /BERT/);
 });
 
 test('parseAuthorYearReferenceLines preserves leading bracket labels as ids', () => {
@@ -327,35 +358,6 @@ test('parseAuthorYearReferenceLines preserves leading bracket labels as ids', ()
     '[BLM+20] Blum, A. et al. (2020). Foundations of data science.';
   app.parseAuthorYearReferenceLines(section);
   assert.deepEqual(app.state.paperReferences.map((r) => r.id), ['Vas17', 'BLM+20']);
-});
-
-// ── refEntryPattern sanitization ─────────────────────────────────────────────
-test('sanitizeCitationFormat keeps a compiling refEntryPattern and forces the g flag', () => {
-  const sane = app.sanitizeCitationFormat({
-    patterns: [{ regex: '\\[\\d+\\]', flags: '' }],
-    refEntryPattern: { regex: '^\\[(\\w+)\\]', flags: 'm', labelGroup: 1 },
-  }, ['[3]']);
-  assert.ok(sane.refEntryPattern);
-  assert.ok(sane.refEntryPattern.flags.includes('g'));
-});
-
-test('sanitizeCitationFormat drops a non-compiling refEntryPattern but keeps the format', () => {
-  const sane = app.sanitizeCitationFormat({
-    patterns: [{ regex: '\\[\\d+\\]', flags: '' }],
-    refEntryPattern: { regex: '(', flags: '' },
-  }, ['[3]']);
-  assert.equal(sane.refEntryPattern, null);
-  assert.equal(sane.patterns.length, 1);
-});
-
-test('sanitizeCitationFormat keeps a format that only carries a refEntryPattern', () => {
-  const sane = app.sanitizeCitationFormat({
-    patterns: [],
-    refEntryPattern: { regex: '^\\[(\\w+)\\]', flags: 'gm', labelGroup: 1 },
-  }, []);
-  assert.ok(sane);
-  assert.equal(sane.patterns.length, 0);
-  assert.ok(sane.refEntryPattern);
 });
 
 test('buildFallbackCitationFormat author-year pattern compiles and matches (regression)', () => {

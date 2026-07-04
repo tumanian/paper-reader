@@ -290,14 +290,13 @@ test('citation-format-detect falls back to built-in patterns when the model is u
   assert.equal(r.json.source, 'fallback');
 });
 
-test('citation-format-detect preserves label-id patterns and normalizes refEntryPattern', async () => {
+test('citation-format-detect preserves label-id patterns', async () => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
   const cap = {};
   const haikuJson = {
     style: 'alpha-bracket',
     description: 'Alphanumeric bracket labels',
     patterns: [{ name: 'alpha', regex: '\\[([A-Za-z][A-Za-z0-9+]{1,10})\\]', flags: '', matchType: 'label-id', idGroup: 1 }],
-    refEntryPattern: { regex: '^\\[([A-Za-z][A-Za-z0-9+]{1,10})\\]', flags: 'm', labelGroup: 1 },
     examples: ['[Vas17]'],
   };
   mockFetch(cap, { content: [{ text: JSON.stringify(haikuJson) }] });
@@ -310,30 +309,62 @@ test('citation-format-detect preserves label-id patterns and normalizes refEntry
   });
   assert.equal(r.status, 200);
   assert.equal(r.json.patterns[0].matchType, 'label-id');
-  assert.ok(r.json.refEntryPattern);
-  assert.ok(r.json.refEntryPattern.flags.includes('g'));
-  assert.equal(r.json.refEntryPattern.labelGroup, 1);
 });
 
-test('citation-format-detect nulls an invalid refEntryPattern but keeps the patterns', async () => {
+test('bibliography-extract returns normalized entries from the model JSON', async () => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
   const cap = {};
   const haikuJson = {
-    style: 'numeric',
-    patterns: [{ name: 'num', regex: '\\[(\\d{1,3})\\]', flags: '', matchType: 'numeric-id', idGroup: 1 }],
-    refEntryPattern: { regex: '(', flags: '' },
-    examples: ['[12]'],
+    references: [
+      { label: null, text: 'Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2018. BERT: Pre-training of deep bidirectional transformers. arXiv:1810.04805.' },
+      { label: null, text: 'Matthew Peters et al. 2018. Deep contextualized word representations. In Proceedings of NAACL.' },
+      { label: null, text: 'Rie Kubota Ando and Tong Zhang. 2005. A framework for learning predictive structures. JMLR, 6:1817-1853.' },
+      { label: null, text: 'x' }, // too short — dropped
+    ],
   };
   mockFetch(cap, { content: [{ text: JSON.stringify(haikuJson) }] });
   const r = await handler.handleChatRequest({
-    task: 'citation-format-detect',
-    bodySample: 'Cited as [12] here.',
-    inTextExamples: ['[12]'],
-    refCount: 30,
+    task: 'bibliography-extract',
+    refText: 'Jacob Devlin, Ming-Wei Chang, Kenton Lee, and\nKristina Toutanova. 2018. Bert: Pre-training of\n'.repeat(3),
   });
   assert.equal(r.status, 200);
-  assert.equal(r.json.refEntryPattern, null);
-  assert.equal(r.json.patterns.length, 1);
+  assert.equal(r.json.references.length, 3);
+  assert.match(r.json.references[0].text, /BERT/);
+  assert.match(cap.body.model, /haiku/i);
+});
+
+test('bibliography-extract preserves labels when entries are labeled', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  const haikuJson = {
+    references: [
+      { label: 'Vas17', text: 'Vassilevska Williams. Multiplying matrices faster than Coppersmith-Winograd. 2017.' },
+      { label: 'BLM+20', text: 'Blum, A. et al. Foundations of data science. Cambridge University Press, 2020.' },
+      { label: 'CW87', text: 'Coppersmith and Winograd. Matrix multiplication via arithmetic progressions. 1987.' },
+    ],
+  };
+  mockFetch(cap, { content: [{ text: JSON.stringify(haikuJson) }] });
+  const r = await handler.handleChatRequest({
+    task: 'bibliography-extract',
+    refText: '[Vas17] Vassilevska Williams...\n[BLM+20] Blum...\n[CW87] Coppersmith...\n' + 'padding '.repeat(20),
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json.references.map((x) => x.label), ['Vas17', 'BLM+20', 'CW87']);
+});
+
+test('bibliography-extract validates input and rejects bad model output', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const r1 = await handler.handleChatRequest({ task: 'bibliography-extract', refText: 'too short' });
+  assert.equal(r1.status, 400);
+
+  const cap = {};
+  mockFetch(cap, { content: [{ text: 'not json at all' }] });
+  const r2 = await handler.handleChatRequest({ task: 'bibliography-extract', refText: 'x'.repeat(200) });
+  assert.equal(r2.status, 502);
+
+  mockFetch(cap, { content: [{ text: '{"references":[{"label":null,"text":"only one entry long enough here"}]}' }] });
+  const r3 = await handler.handleChatRequest({ task: 'bibliography-extract', refText: 'x'.repeat(200) });
+  assert.equal(r3.status, 502);
 });
 
 test('citation-match accepts a string matchId from the model for alpha labels', async () => {

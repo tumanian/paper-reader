@@ -5,10 +5,10 @@ import { esc, decodeXmlText, resolveMediaUrl, normalizeForMatch } from './util.j
 import { sanitizeHtml } from './sanitize.js';
 import {
   docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions, currentMode,
-  citationFormat, MAX_PAPER_CHARS,
+  extractedReferences, MAX_PAPER_CHARS,
   setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat,
   setBibByNumber, setPaperRefText, setPaperText, setPaperReferences,
-  setActiveId, setPendingSel, setCitationFormatPromise,
+  setActiveId, setPendingSel, setCitationFormatPromise, setExtractedReferences,
 } from './state.js';
 import { docIdFor, loadStore, restoreDiscussions, loadDocSummary, persistCurrentDoc } from './persistence.js';
 import { renderLibrary, updateAuthBar, updateLogoutFab } from './library.js';
@@ -94,6 +94,7 @@ export async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
   replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
   setCitationFormat(saved?.citationFormat || null);
+  setExtractedReferences(saved?.references || null);
 
   try {
     setStatus('Fetching…');
@@ -214,6 +215,7 @@ export async function loadArxivPdf(rawUrl, knownDocId, citationContext = null) {
   replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
   setCitationFormat(saved?.citationFormat || null);
+  setExtractedReferences(saved?.references || null);
 
   const titleSignal = AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined;
 
@@ -308,6 +310,15 @@ export function renderWebArticle(title, html, url) {
 export function buildPaperReferences() {
   setPaperReferences([]);
 
+  // A Haiku-extracted bibliography (cached on the doc) exists only when the
+  // local splitters already failed on this paper — trust it first.
+  if (extractedReferences?.length) {
+    paperReferences.push(...extractedReferences);
+    _wlLogCitation('success', 'extract-refs', { count: paperReferences.length, source: 'haiku' });
+    dumpBibliography('haiku');
+    return;
+  }
+
   // Keys are usually numeric but can be alpha labels ([Vas17]); numerics sort
   // first in order, labels after, lexicographically.
   const entries = Object.entries(bibByNumber).sort((a, b) => {
@@ -393,51 +404,41 @@ export function parseReferencesFromSection(section) {
     if (found.length >= 3) paperReferences.push(...found);
   }
 
-  if (!paperReferences.length && citationFormat?.refEntryPattern) {
-    paperReferences.push(...parseReferencesWithPattern(section, citationFormat.refEntryPattern));
-  }
-
   if (!paperReferences.length) {
     parseAuthorYearReferenceLines(section);
   }
 }
 
-// Split a references section using the Haiku-learned refEntryPattern — a regex
-// matching the start of each entry with an optional label capture group.
-export function parseReferencesWithPattern(section, rep) {
-  if (!section || !rep?.regex) return [];
-  let re;
-  try {
-    let flags = String(rep.flags || '').replace(/[^gimsuy]/g, '');
-    if (!flags.includes('g')) flags += 'g';
-    re = new RegExp(rep.regex, flags);
-  } catch { return []; }
-
-  const starts = [];
-  for (const m of section.matchAll(re)) {
-    if (m[0].length === 0) return []; // zero-width pattern: reject outright
-    const label = rep.labelGroup > 0 ? String(m[rep.labelGroup] || '').trim() : '';
-    starts.push({ index: m.index, markerLen: m[0].length, label });
-    if (starts.length > 400) break;
+// PDF text extraction yields one physical line per visual line, so a wrapped
+// bibliography entry arrives as several short fragments. Reassemble them:
+// join a line into the previous one when the previous line ends mid-word
+// (hyphen), mid-sentence (no terminal punctuation), or before the entry has a
+// year — real entries virtually always carry one.
+export function mergeWrappedRefLines(lines) {
+  const merged = [];
+  for (const line of lines) {
+    const prev = merged.length ? merged[merged.length - 1] : null;
+    if (prev === null || prev.length > 1200) { merged.push(line); continue; }
+    if (/[A-Za-z]-$/.test(prev)) {
+      merged[merged.length - 1] = prev.slice(0, -1) + line;
+      continue;
+    }
+    const prevComplete = /[.!?]$/.test(prev) && /\b(19|20)\d{2}\b/.test(prev);
+    if (!prevComplete || /^[a-z]/.test(line)) {
+      merged[merged.length - 1] = prev + ' ' + line;
+    } else {
+      merged.push(line);
+    }
   }
-  if (starts.length < 3) return [];
-
-  const out = [];
-  const seen = new Set();
-  for (let i = 0; i < starts.length; i++) {
-    const end = i + 1 < starts.length ? starts[i + 1].index : section.length;
-    const text = section.slice(starts[i].index + starts[i].markerLen, end).replace(/\s+/g, ' ').trim();
-    if (text.length < 20 || text.length > 1500) continue;
-    let id = starts[i].label;
-    if (!id || seen.has(id)) id = out.length + 1;
-    seen.add(String(id));
-    out.push({ id, text, url: resolveReferenceEntry(text).url });
-  }
-  return out.length >= 3 ? out : [];
+  return merged;
 }
 
 export function parseAuthorYearReferenceLines(section) {
-  const lines = section.split(/\n+/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const rawLines = section.split(/\n+/)
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter((l) => l && !/^\[Page \d+\]$/.test(l)
+      && !/^(references|bibliography|works cited|acknowledgments?)$/i.test(l));
+  const lines = mergeWrappedRefLines(rawLines);
   let id = 1;
   for (const line of lines) {
     if (line.length < 25) continue;

@@ -485,28 +485,13 @@ export function verifyFetchedPaperAgainstBib(cited, meta) {
   return { ok: hits >= 2 || ratio >= 0.3, ratio, hits, metaWords: metaWords.slice(0, 6) };
 }
 
-export function sanitizeRefEntryPattern(rep) {
-  if (!rep?.regex || typeof rep.regex !== 'string' || rep.regex.length > 300) return null;
-  let flags = String(rep.flags || '').replace(/[^gimsuy]/g, '');
-  if (!flags.includes('g')) flags += 'g';
-  try { new RegExp(rep.regex, flags); } catch { return null; }
-  const labelGroup = rep.labelGroup != null && !Number.isNaN(Number(rep.labelGroup)) ? Number(rep.labelGroup) : 1;
-  return { regex: rep.regex, flags, labelGroup };
-}
-
 export function sanitizeCitationFormat(format, examples) {
-  if (!format) return null;
-  const refEntryPattern = sanitizeRefEntryPattern(format.refEntryPattern);
-  if (!format.patterns?.length) {
-    return refEntryPattern ? { ...format, patterns: [], refEntryPattern } : null;
-  }
+  if (!format?.patterns?.length) return null;
   const testTexts = [...(examples || []), ...(format.examples || [])].filter(Boolean);
   const valid = format.patterns.filter((p) => {
     try { new RegExp(p.regex, p.flags || ''); return true; } catch { return false; }
   });
-  if (!valid.length) {
-    return refEntryPattern ? { ...format, patterns: [], refEntryPattern } : null;
-  }
+  if (!valid.length) return null;
   const matched = valid.filter((p) => {
     if (!testTexts.length) return true;
     try {
@@ -515,7 +500,7 @@ export function sanitizeCitationFormat(format, examples) {
     } catch { return false; }
   });
   const patterns = matched.length ? matched : valid;
-  return { ...format, patterns, refEntryPattern };
+  return { ...format, patterns };
 }
 
 export function buildFallbackCitationFormat(ctx) {

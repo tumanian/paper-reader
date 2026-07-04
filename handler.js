@@ -749,18 +749,6 @@ function validateCitationPatterns(patterns) {
   return out;
 }
 
-function validateRefEntryPattern(p) {
-  if (!p?.regex || typeof p.regex !== 'string' || p.regex.length > 300) return null;
-  let flags = String(p.flags || '').replace(/[^gimsuy]/g, '');
-  if (!flags.includes('g')) flags += 'g';
-  if (!flags.includes('m')) flags += 'm';
-  try {
-    new RegExp(p.regex, flags);
-  } catch (_) { return null; }
-  const labelGroup = p.labelGroup != null && !Number.isNaN(Number(p.labelGroup)) ? Number(p.labelGroup) : 1;
-  return { regex: p.regex, flags, labelGroup };
-}
-
 function parseCitationFormatFromText(raw) {
   if (!raw) return null;
   let parsed = parseJsonFromText(raw);
@@ -841,7 +829,6 @@ function buildCitationFormatResponse(parsed, examples, refCount, source) {
     style: parsed?.style ? String(parsed.style).slice(0, 80) : (source === 'fallback' ? 'default' : 'unknown'),
     description: parsed?.description ? String(parsed.description).slice(0, 200) : null,
     patterns: fallback,
-    refEntryPattern: validateRefEntryPattern(parsed?.refEntryPattern),
     examples: Array.isArray(parsed?.examples) ? parsed.examples.slice(0, 8).map(String) : (examples || []).slice(0, 8),
     refCount: refCount || null,
     learnedAt: Date.now(),
@@ -864,7 +851,7 @@ async function callCitationFormatDetect(body) {
     `Bibliography entry count: ${refCount || 'unknown'}`;
 
   const result = await callHaiku({
-    max_tokens: 700,
+    max_tokens: 600,
     system:
       'Analyze how this academic paper formats in-text citations. ' +
       'Reply with ONLY valid JSON (no markdown, no commentary). ' +
@@ -872,10 +859,7 @@ async function callCitationFormatDetect(body) {
       'patterns: 1-3 entries. regex: JavaScript syntax, double-backslash escapes, max 100 chars. ' +
       'numeric-id for [12] style. author-year for (Author, 2020) style. ' +
       'label-id for alphanumeric bracket labels like [Vas17] or [BLM+20]; idGroup captures the label. ' +
-      'idGroup/authorGroup/yearGroup are capture group numbers. ' +
-      'If the bibliography entry count is 0 or the parsed entries look wrong, ALSO return ' +
-      '"refEntryPattern":{"regex":"...","flags":"gm","labelGroup":1} — a regex matching the start of each entry ' +
-      'in the references section sample, capturing its label (labelGroup 0 if entries are unlabeled).',
+      'idGroup/authorGroup/yearGroup are capture group numbers.',
     userContent: prompt,
   });
 
@@ -892,6 +876,51 @@ async function callCitationFormatDetect(body) {
   }
 
   return { status: 200, json: response };
+}
+
+// Split a references section into individual bibliography entries. Used as a
+// fallback when the client's local splitters fail (e.g. two-column PDFs whose
+// entries arrive as wrapped line fragments). Haiku re-emits the entries, which
+// also repairs hyphenation and rejoined arXiv ids / DOIs.
+async function callBibliographyExtract(body) {
+  const { refText } = body || {};
+  if (!refText || typeof refText !== 'string' || refText.trim().length < 100) {
+    return { status: 400, json: { error: 'Bibliography extract needs the references section text.' } };
+  }
+
+  const result = await callHaiku({
+    max_tokens: 8000,
+    system:
+      'You are given the references section of an academic paper as extracted from a PDF: ' +
+      'entries may be wrapped across lines mid-sentence and words hyphenated at line breaks. ' +
+      'Return ONLY valid JSON (no markdown, no commentary): {"references":[{"label":null,"text":"..."}]}. ' +
+      'One item per bibliography entry, in the original order. ' +
+      'text: the complete entry as a single line, hyphenation repaired, nothing added or dropped. ' +
+      'label: the entry\'s citation key when entries are labeled ("[12]" -> "12", "[Vas17]" -> "Vas17"), else null.',
+    userContent: refText.slice(0, 16000),
+  });
+
+  if (result.status !== 200) return result;
+
+  const parsed = parseJsonFromText(result.text);
+  const list = Array.isArray(parsed?.references) ? parsed.references : null;
+  if (!list) {
+    return { status: 502, json: { error: 'Bibliography extract returned invalid JSON.' } };
+  }
+
+  const references = [];
+  for (const item of list.slice(0, 300)) {
+    const text = String(item?.text || '').replace(/\s+/g, ' ').trim().slice(0, 800);
+    if (text.length < 20) continue;
+    const label = item?.label != null && String(item.label).trim()
+      ? String(item.label).trim().slice(0, 40) : null;
+    references.push({ label, text });
+  }
+  if (references.length < 3) {
+    return { status: 502, json: { error: 'Bibliography extract found too few entries.' } };
+  }
+
+  return { status: 200, json: { references } };
 }
 
 async function callCitationDetect(body) {
@@ -940,6 +969,7 @@ async function handleChatRequest(body) {
   if (body?.task === 'citation-preview-claude') return callCitationPreviewClaude(body);
   if (body?.task === 'citation-detect') return callCitationDetect(body);
   if (body?.task === 'citation-format-detect') return callCitationFormatDetect(body);
+  if (body?.task === 'bibliography-extract') return callBibliographyExtract(body);
   return callAnthropic(body);
 }
 

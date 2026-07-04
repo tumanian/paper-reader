@@ -1,4 +1,4 @@
-import { discussions, pdfDoc, paperText, MAX_PAPER_CHARS, setPdfDoc, setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat, setPaperText, setPaperRefText } from './state.js';
+import { discussions, pdfDoc, paperText, MAX_PAPER_CHARS, setPdfDoc, setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat, setExtractedReferences, setPaperText, setPaperRefText } from './state.js';
 import { docIdFor, loadStore, restoreDiscussions, loadDocSummary, persistCurrentDoc } from './persistence.js';
 import { renderLibrary, updateAuthBar } from './library.js';
 
@@ -59,6 +59,7 @@ export async function loadPDF(file) {
   replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
   setCitationFormat(saved?.citationFormat || null);
+  setExtractedReferences(saved?.references || null);
 
   _pdfSetStatus('Rendering PDF…');
   const buf = await file.arrayBuffer();

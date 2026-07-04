@@ -1,6 +1,7 @@
 import { simpleHash } from './util.js';
 import {
   discussions, currentDocId, docMeta, conversationSummary, summaryMessageCount, summaryDirty, citationFormat,
+  extractedReferences,
   setConversationSummary, setSummaryMessageCount, setSummaryDirty,
 } from './state.js';
 
@@ -191,6 +192,7 @@ export async function persistCurrentDoc() {
     conversationSummary,
     summaryMessageCount,
     citationFormat: citationFormat || null,
+    references: extractedReferences?.length ? extractedReferences.slice(0, 300) : null,
     discussions: discussions.map(d => ({
       id: d.id, txt: d.txt, mode: d.mode, pageNum: d.pageNum,
       color: d.color, relRects: d.relRects, messages: d.messages,

@@ -5,8 +5,9 @@
 
 import { esc, renderPreviewHtml, simpleHash, decodeXmlText, asGlobalRegex } from './util.js';
 import {
-  currentDocId, docMeta, pendingSel, paperText, paperReferences, citationFormat, citationFormatPromise,
-  setPendingCitation, setCitationFormat, setCitationFormatPromise,
+  currentDocId, docMeta, pendingSel, paperText, paperRefText, paperReferences, citationFormat, citationFormatPromise,
+  extractedReferences,
+  setPendingCitation, setCitationFormat, setCitationFormatPromise, setExtractedReferences,
 } from './state.js';
 import { persistCurrentDoc } from './persistence.js';
 import {
@@ -620,8 +621,73 @@ function sampleCitationContext() {
 }
 
 
+// A parsed bibliography is suspect when it's empty despite a real references
+// section, or when most "entries" carry no year — the signature of a wrapped
+// PDF bibliography shredded into line fragments.
+function bibliographyLooksSuspect() {
+  const section = paperRefText || extractReferencesSection(paperText);
+  if (!section || section.length < 300) return false;
+  if (!paperReferences.length) return true;
+  if (paperReferences.length < 5) return false;
+  const withYear = paperReferences.filter((r) => /\b(19|20)\d{2}\b/.test(r.text)).length;
+  return withYear / paperReferences.length < 0.7;
+}
+
+let bibliographyExtractPromise = null;
+
+// When local splitting failed (or produced shreds), ask Haiku for the actual
+// entry list once, cache it on the doc, and rebuild the bibliography from it.
+export async function ensureBibliography() {
+  if (!currentDocId || !paperText) return;
+  if (extractedReferences?.length) return;
+  if (!bibliographyLooksSuspect()) return;
+  if (bibliographyExtractPromise) return bibliographyExtractPromise;
+
+  const docId = currentDocId;
+  bibliographyExtractPromise = (async () => {
+    const section = paperRefText || extractReferencesSection(paperText);
+    try {
+      const r = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: 'bibliography-extract', refText: section.slice(0, 16000) }),
+      });
+      const data = await r.json();
+      if (data.error || !Array.isArray(data.references) || data.references.length < 3) {
+        logCitation('fail', 'extract-refs-haiku', { reason: data.error || 'too few entries' });
+        return;
+      }
+      const seen = new Set();
+      const refs = [];
+      for (const item of data.references) {
+        const text = String(item?.text || '').trim();
+        if (text.length < 20) continue;
+        let id = item?.label ? String(item.label).trim() : refs.length + 1;
+        if (seen.has(String(id))) id = refs.length + 1;
+        seen.add(String(id));
+        refs.push({ id, text, url: resolveReferenceEntry(text).url });
+      }
+      if (refs.length < 3) return;
+      // The doc may have changed while Haiku was working — don't cross-wire.
+      if (currentDocId !== docId) return;
+      setExtractedReferences(refs);
+      buildPaperReferences();
+      logCitation('success', 'extract-refs-haiku', { count: refs.length });
+      await persistCurrentDoc();
+    } catch (e) {
+      logCitation('fail', 'extract-refs-haiku', { error: e.message });
+    } finally {
+      bibliographyExtractPromise = null;
+    }
+  })();
+  return bibliographyExtractPromise;
+}
+
 export async function ensureCitationFormat(force = false) {
   if (!currentDocId || !paperText) return citationFormat;
+  // Rescue a failed/shredded bibliography first, so format detection (and its
+  // refCount cache guard below) sees the real entries.
+  await ensureBibliography();
   if (citationFormat && !force && citationFormat.refCount === paperReferences.length) {
     return citationFormat;
   }
@@ -667,16 +733,7 @@ export async function ensureCitationFormat(force = false) {
           source: format.source || 'haiku',
         });
       }
-      const hadNoRefs = !paperReferences.length;
       setCitationFormat({ ...format, refCount: paperReferences.length });
-      if (hadNoRefs && format.refEntryPattern) {
-        // The learned refEntryPattern may unlock bibliography splitting that
-        // failed with the hardcoded splitters — retry now that it's in state.
-        buildPaperReferences();
-        if (paperReferences.length) {
-          setCitationFormat({ ...citationFormat, refCount: paperReferences.length });
-        }
-      }
       await persistCurrentDoc();
       return citationFormat;
     } catch (e) {
