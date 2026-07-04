@@ -14,6 +14,37 @@ const ALLOWED_MODELS = new Set([DEFAULT_CHAT_MODEL, DEFAULT_HAIKU_MODEL]);
 const MAX_OUTPUT_TOKENS = 4096;
 const MAX_REQUEST_CHARS = 2000000;
 
+// Global daily circuit-breaker for total model calls. Serverless functions are
+// stateless, so the counter lives in Supabase (a single row per day, bumped via
+// an atomic RPC) and is shared across every invocation. It's a coarse cost cap —
+// per-IP throttling is handled at the edge (Cloudflare); this stops a runaway
+// total from any source. Disabled (fail-open) when Supabase isn't configured, so
+// local dev and Supabase-less deploys are unaffected. Uses the SERVICE ROLE key,
+// which is server-only and never sent to the browser.
+async function overGlobalCeiling() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return false; // not configured → ceiling disabled
+  const limit = Number(process.env.DAILY_REQUEST_LIMIT) || 2000;
+  try {
+    const r = await fetch(`${url.replace(/\/$/, '')}/rest/v1/rpc/bump_api_usage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({ p_amount: 1 }),
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) return false; // counter error → fail open (edge rules still apply)
+    const count = Number(await r.json());
+    return Number.isFinite(count) && count > limit;
+  } catch {
+    return false; // never let the counter itself take the app down
+  }
+}
+
 async function callAnthropic(body) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -39,6 +70,11 @@ async function callAnthropic(body) {
   const payload = JSON.stringify({ model: safeModel, max_tokens: safeMaxTokens, system, messages });
   if (payload.length > MAX_REQUEST_CHARS) {
     return { status: 413, json: { error: 'Request too large.' } };
+  }
+
+  // Global daily ceiling: check + increment before spending on the model call.
+  if (await overGlobalCeiling()) {
+    return { status: 429, json: { error: 'Daily request limit reached. Please try again later.' } };
   }
 
   try {
