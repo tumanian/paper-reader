@@ -63,13 +63,38 @@ test('callAnthropic sends the API key header and the Anthropic endpoint', async 
   assert.equal(cap.opts.headers['anthropic-version'], '2023-06-01');
 });
 
-test('callAnthropic passes model through and defaults max_tokens to 1000', async () => {
+test('callAnthropic coerces an unknown model to the default and defaults max_tokens to 1000', async () => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
   const cap = {};
   mockFetch(cap);
   await handler.callAnthropic({ model: 'claude-custom-9', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(cap.body.model, 'claude-custom-9');
+  assert.equal(cap.body.model, 'claude-sonnet-4-6', 'unknown model pinned to the default');
   assert.equal(cap.body.max_tokens, 1000);
+});
+
+test('callAnthropic passes an allow-listed model through', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  mockFetch(cap);
+  await handler.callAnthropic({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(cap.body.model, 'claude-haiku-4-5');
+});
+
+test('callAnthropic clamps an over-ceiling max_tokens', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  mockFetch(cap);
+  await handler.callAnthropic({ max_tokens: 999999, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(cap.body.max_tokens, 4096);
+});
+
+test('callAnthropic rejects an oversize payload with 413 before calling upstream', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  global.fetch = async () => { throw new Error('must not call upstream for an oversize request'); };
+  const huge = 'x'.repeat(2100000);
+  const r = await handler.callAnthropic({ messages: [{ role: 'user', content: huge }] });
+  assert.equal(r.status, 413);
+  assert.match(r.json.error, /too large/i);
 });
 
 test('callAnthropic forwards a STRING system field untouched', async () => {

@@ -4,6 +4,16 @@
 const DEFAULT_CHAT_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5';
 
+// Caller-influenced limits for the chat proxy. Until per-user auth/rate limiting
+// lands, these cap the per-request cost an unauthenticated caller can drive:
+// pin the model to the two the app actually uses, ceiling the output tokens, and
+// bound total payload size. Input can be large by design — the full paper (up to
+// MAX_PAPER_CHARS ~600k chars) rides in the cached system block — so the size
+// cap is deliberately generous.
+const ALLOWED_MODELS = new Set([DEFAULT_CHAT_MODEL, DEFAULT_HAIKU_MODEL]);
+const MAX_OUTPUT_TOKENS = 4096;
+const MAX_REQUEST_CHARS = 2000000;
+
 async function callAnthropic(body) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -15,11 +25,22 @@ async function callAnthropic(body) {
     return { status: 400, json: { error: 'Request must include a messages array.' } };
   }
 
+  // Clamp caller-influenced fields (see limits above): pin the model to the
+  // allow-list and ceiling the output tokens so the proxy can't be pushed into
+  // an expensive request.
+  const safeModel = ALLOWED_MODELS.has(model) ? model : DEFAULT_CHAT_MODEL;
+  const safeMaxTokens = Math.min(Math.max(1, Number(max_tokens) || 1000), MAX_OUTPUT_TOKENS);
+
   // `system` may be a plain string OR an array of content blocks. When the
   // frontend sends the full paper as its own block tagged with
   // cache_control: { type: 'ephemeral' }, Anthropic caches it so repeat
   // questions on the same paper bill cached input (~10% of normal). We pass
   // whatever structure we're given straight through.
+  const payload = JSON.stringify({ model: safeModel, max_tokens: safeMaxTokens, system, messages });
+  if (payload.length > MAX_REQUEST_CHARS) {
+    return { status: 413, json: { error: 'Request too large.' } };
+  }
+
   try {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -28,12 +49,7 @@ async function callAnthropic(body) {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model:      model      || DEFAULT_CHAT_MODEL,
-        max_tokens: max_tokens || 1000,
-        system,
-        messages,
-      }),
+      body: payload,
     });
 
     const data = await r.json();
