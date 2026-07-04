@@ -7,7 +7,7 @@ import { initWebLoader, setWebLoaderHooks, loadWebPage, loadArxivPdf, startApp, 
 import { setCitationResolveHooks, logCitation, ensureCitationFormat } from './citation-resolve.js';
 import { initSelection, setSelectionHooks, updateReturnButton, finishCitationNavigation, repositionPopover } from './selection.js';
 import { initFigure, setFigureHooks } from './figure.js';
-import { initChat, setChatHooks, paintHighlight, renderList, openChat, sendMessage, showList, findNearbyContext } from './chat.js';
+import { initChat, setChatHooks, paintHighlight, renderList, openChat, sendMessage, showList, findNearbyContext, setSidebarCollapsed } from './chat.js';
 import { runOnboardingDemo, cancelOnboardingPlacement, maybeApplyOnboardingCuration, getFeaturedPaper, openFeaturedExample, loadOnboardingData, loadOnboardingActionCache } from './onboarding.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -45,6 +45,7 @@ function backToUpload() {
   document.getElementById('url-input').value='';
   document.getElementById('pdf-input').value='';
   document.getElementById('upload-screen').style.display='flex';
+  setSidebarCollapsed(false);
   showList();
   renderLibrary();
   updateAuthBar(PaperStore.getSyncStatus());

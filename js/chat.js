@@ -139,6 +139,14 @@ export function showList() {
   renderList();
 }
 
+export function setSidebarCollapsed(collapsed) {
+  const main = document.getElementById('main-app');
+  const sidebar = document.getElementById('sidebar');
+  if (!main || !sidebar) return;
+  main.classList.toggle('sidebar-collapsed', collapsed);
+  sidebar.classList.toggle('collapsed', collapsed);
+}
+
 // ═══════════════════════════════════════════════════════
 //  RESPONSE RATINGS — "golden set" capture (separate IDB)
 // ═══════════════════════════════════════════════════════
@@ -573,6 +581,8 @@ export async function callClaude(system, messages) {
 // Wire up chat DOM listeners. Called once from boot().
 export function initChat() {
   document.getElementById('back-btn').addEventListener('click', showList);
+  document.getElementById('sidebar-collapse-btn').addEventListener('click', () => setSidebarCollapsed(true));
+  document.getElementById('sidebar-expand-btn').addEventListener('click', () => setSidebarCollapsed(false));
   document.getElementById('send-btn').addEventListener('click', sendMessage);
   document.getElementById('msg-input').addEventListener('keydown', e => {
     if (e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}
