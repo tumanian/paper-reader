@@ -69,7 +69,7 @@ const SHIM = `
       shouldTryCitationPreview, findNearbyContext, buildPaperBlock, buildDocContext,
       esc, renderPreviewHtml, md, timeAgo, resolveMediaUrl,
       sanitizeOnboarding, sanitizeOnboardingActionCache, isTodoValue, normalizeForMatch, getFeaturedPaper,
-      buildPaperReferences, parseReferencesFromSection, parseAuthorYearReferenceLines, expandSelectionText,
+      buildPaperReferences, parseReferencesFromSection, parseAuthorYearReferenceLines, mergeWrappedRefLines, expandSelectionText,
       initStorage, loadStore, persistCurrentDoc,
       sendMessage, callClaude, buildRatingRecord, ratingIdFor,
     },
@@ -82,6 +82,7 @@ const SHIM = `
       currentDocId: acc(function(){return currentDocId;}, function(v){currentDocId=v;}),
       currentMode: acc(function(){return currentMode;}, function(v){currentMode=v;}),
       citationFormat: acc(function(){return citationFormat;}, function(v){citationFormat=v;}),
+      extractedReferences: acc(function(){return extractedReferences;}, function(v){extractedReferences=v;}),
       docMeta: acc(function(){return docMeta;}, function(v){docMeta=v;}),
       activeId: acc(function(){return activeId;}, function(v){activeId=v;}),
       conversationSummary: acc(function(){return conversationSummary;}, function(v){conversationSummary=v;}),
@@ -133,6 +134,7 @@ function loadApp() {
     state.currentDocId = null;
     state.currentMode = null;
     state.citationFormat = null;
+    state.extractedReferences = null;
     state.docMeta = { name: '', mode: '', badge: '', url: null };
     state.activeId = null;
     state.conversationSummary = null;

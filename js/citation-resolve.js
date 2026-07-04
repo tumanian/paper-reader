@@ -5,8 +5,9 @@
 
 import { esc, renderPreviewHtml, simpleHash, decodeXmlText, asGlobalRegex } from './util.js';
 import {
-  currentDocId, docMeta, pendingSel, paperText, paperReferences, citationFormat, citationFormatPromise,
-  setPendingCitation, setCitationFormat, setCitationFormatPromise,
+  currentDocId, docMeta, pendingSel, paperText, paperRefText, paperReferences, citationFormat, citationFormatPromise,
+  extractedReferences,
+  setPendingCitation, setCitationFormat, setCitationFormatPromise, setExtractedReferences,
 } from './state.js';
 import { persistCurrentDoc } from './persistence.js';
 import {
@@ -605,6 +606,7 @@ function sampleCitationContext() {
   const inTextExamples = [];
   const citeRes = [
     /\[[\d,\s\-–—]+\]/g,
+    /\[[A-Za-z][A-Za-z0-9+\-]{1,15}\]/g,
     /\([^()]{3,100}(?:19|20)\d{2}[a-z]?[^()]{0,30}\)/g,
     /\b[A-Z][A-Za-z\-]+(?:\s+(?:&|and)\s+[A-Z][A-Za-z\-]+)+\s*,?\s*(?:19|20)\d{2}[a-z]?/g,
   ];
@@ -619,15 +621,84 @@ function sampleCitationContext() {
 }
 
 
+// A parsed bibliography is suspect when it's empty despite a real references
+// section, or when most "entries" carry no year — the signature of a wrapped
+// PDF bibliography shredded into line fragments.
+function bibliographyLooksSuspect() {
+  const section = paperRefText || extractReferencesSection(paperText);
+  if (!section || section.length < 300) return false;
+  if (!paperReferences.length) return true;
+  if (paperReferences.length < 5) return false;
+  const withYear = paperReferences.filter((r) => /\b(19|20)\d{2}\b/.test(r.text)).length;
+  return withYear / paperReferences.length < 0.7;
+}
+
+let bibliographyExtractPromise = null;
+
+// When local splitting failed (or produced shreds), ask Haiku for the actual
+// entry list once, cache it on the doc, and rebuild the bibliography from it.
+export async function ensureBibliography() {
+  if (!currentDocId || !paperText) return;
+  if (extractedReferences?.length) return;
+  if (!bibliographyLooksSuspect()) return;
+  if (bibliographyExtractPromise) return bibliographyExtractPromise;
+
+  const docId = currentDocId;
+  bibliographyExtractPromise = (async () => {
+    const section = paperRefText || extractReferencesSection(paperText);
+    try {
+      const r = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: 'bibliography-extract', refText: section.slice(0, 16000) }),
+      });
+      const data = await r.json();
+      if (data.error || !Array.isArray(data.references) || data.references.length < 3) {
+        logCitation('fail', 'extract-refs-haiku', { reason: data.error || 'too few entries' });
+        return;
+      }
+      const seen = new Set();
+      const refs = [];
+      for (const item of data.references) {
+        const text = String(item?.text || '').trim();
+        if (text.length < 20) continue;
+        let id = item?.label ? String(item.label).trim() : refs.length + 1;
+        if (seen.has(String(id))) id = refs.length + 1;
+        seen.add(String(id));
+        refs.push({ id, text, url: resolveReferenceEntry(text).url });
+      }
+      if (refs.length < 3) return;
+      // The doc may have changed while Haiku was working — don't cross-wire.
+      if (currentDocId !== docId) return;
+      setExtractedReferences(refs);
+      buildPaperReferences();
+      logCitation('success', 'extract-refs-haiku', { count: refs.length });
+      await persistCurrentDoc();
+    } catch (e) {
+      logCitation('fail', 'extract-refs-haiku', { error: e.message });
+    } finally {
+      bibliographyExtractPromise = null;
+    }
+  })();
+  return bibliographyExtractPromise;
+}
+
 export async function ensureCitationFormat(force = false) {
-  if (!currentDocId || !paperText || !paperReferences.length) return citationFormat;
+  if (!currentDocId || !paperText) return citationFormat;
+  // Rescue a failed/shredded bibliography first, so format detection (and its
+  // refCount cache guard below) sees the real entries.
+  await ensureBibliography();
   if (citationFormat && !force && citationFormat.refCount === paperReferences.length) {
     return citationFormat;
   }
   if (citationFormatPromise) return citationFormatPromise;
 
+  const ctx = sampleCitationContext();
+  // Zero parsed refs is fine as long as a references section exists — Haiku
+  // can return a refEntryPattern that lets us split it after the fact.
+  if (!paperReferences.length && ctx.refSample.length < 200) return citationFormat;
+
   setCitationFormatPromise((async () => {
-    const ctx = sampleCitationContext();
     try {
       const r = await fetch('/api/chat', {
         method: 'POST',
@@ -738,6 +809,9 @@ export async function loadCitationPreview() {
   const logKey = citeLogKey(expandedSelection);
 
   if (!paperReferences.length) {
+    // Still learn the paper's format in the background: a refEntryPattern can
+    // recover the bibliography for the next selection.
+    void ensureCitationFormat();
     try {
       await loadCitationPreviewWithoutBibliography({
         el, citeBtn, readLaterBtn, expandedSelection, passage, logKey, signal,

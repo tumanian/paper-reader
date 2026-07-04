@@ -231,6 +231,150 @@ test('sanitizeCitationFormat returns null when there are no usable patterns', ()
   assert.equal(app.sanitizeCitationFormat(null, []), null);
 });
 
+// ── label-id patterns (alpha bracket labels like [Vas17]) ────────────────────
+const ALPHA_REFS = [
+  { id: 'Vas17', text: 'Vassilevska Williams, V. Multiplying matrices faster. 2017.' },
+  { id: 'BLM+20', text: 'Blum, A. et al. Foundations of data science. 2020.' },
+];
+const ALPHA_FORMAT = {
+  style: 'alpha-bracket',
+  patterns: [{ name: 'alpha-bracket', regex: '\\[([A-Za-z][A-Za-z0-9+\\-]{1,15})\\]', flags: '', matchType: 'label-id', idGroup: 1 }],
+};
+
+test('matchWithStoredFormat resolves a label-id pattern to the reference id', () => {
+  const m = app.matchWithStoredFormat('[Vas17]', ALPHA_REFS, ALPHA_FORMAT);
+  assert.equal(m.isCitation, true);
+  assert.equal(m.matchId, 'Vas17');
+  assert.equal(m.confidence, 0.98);
+});
+
+test('matchWithStoredFormat matches labels case-insensitively but returns the bib casing', () => {
+  const m = app.matchWithStoredFormat('[vas17]', ALPHA_REFS, ALPHA_FORMAT);
+  assert.equal(m.matchId, 'Vas17');
+});
+
+test('matchWithStoredFormat returns null for a label absent from the bibliography', () => {
+  assert.equal(app.matchWithStoredFormat('[Zzz99]', ALPHA_REFS, ALPHA_FORMAT), null);
+});
+
+test('matchCitationToReferences resolves alpha labels only via the stored format', () => {
+  const m = app.matchCitationToReferences('[Vas17]', ALPHA_REFS, ALPHA_FORMAT);
+  assert.equal(m.isCitation, true);
+  assert.equal(m.matchId, 'Vas17');
+  // Without a learned format the hardcoded fallbacks don't know this style.
+  assert.equal(app.matchCitationToReferences('[Vas17]', ALPHA_REFS), null);
+});
+
+test('looksLikeCitation consults the learned format before the hardcoded patterns', () => {
+  assert.equal(app.looksLikeCitation('[Vas17]'), false);
+  app.state.citationFormat = ALPHA_FORMAT;
+  assert.equal(app.looksLikeCitation('[Vas17]'), true);
+});
+
+test('shouldTryCitationPreview accepts learned-format citations without a bibliography', () => {
+  app.state.paperReferences = [];
+  assert.equal(app.shouldTryCitationPreview('[Vas17]'), false);
+  app.state.citationFormat = ALPHA_FORMAT;
+  assert.equal(app.shouldTryCitationPreview('[Vas17]'), true);
+});
+
+test('parseCitation resolves an alpha label through the stored format', () => {
+  app.state.paperReferences = ALPHA_REFS;
+  app.state.citationFormat = ALPHA_FORMAT;
+  const c = app.parseCitation('[Vas17]');
+  assert.equal(c.label, '[Vas17]');
+  assert.match(c.refText, /Vassilevska/);
+});
+
+test('findReferenceInPaper escapes regex metacharacters in alpha labels', () => {
+  app.state.paperText = 'Body text.\n\nReferences\n[BLM+20] Blum, A. et al. Foundations of data science. Cambridge University Press, 2020.\n[Vas17] Vassilevska Williams, V. Multiplying matrices faster. 2017.';
+  const ref = app.findReferenceInPaper('BLM+20');
+  assert.ok(ref);
+  assert.match(ref.refText, /Blum/);
+});
+
+// ── bibliography splitting (alpha labels + learned refEntryPattern) ──────────
+test('parseReferencesFromSection splits alpha-bracket bibliographies with string ids', () => {
+  const section =
+    '[Vas17] Vassilevska Williams, V. Multiplying matrices in subcubic time. 2017.\n' +
+    '[BLM+20] Blum, A., et al. Foundations of data science. 2020.\n' +
+    '[Foo19] Foo, B. A third entry with enough text to count. 2019.';
+  app.parseReferencesFromSection(section);
+  assert.deepEqual(app.state.paperReferences.map((r) => r.id), ['Vas17', 'BLM+20', 'Foo19']);
+});
+
+test('mergeWrappedRefLines reassembles wrapped bibliography entries', () => {
+  const lines = [
+    'Rie Kubota Ando and Tong Zhang. 2005. A frame-',
+    'work for learning predictive structures from multi-',
+    'ple tasks and unlabeled data. Journal of Machine',
+    'Learning Research, 6:1817-1853.',
+    'Luisa Bentivogli, Peter Clark, Ido Dagan, and Danilo',
+    'Giampiccolo. 2009. The fifth pascal recognizing',
+    'textual entailment challenge. In TAC.',
+  ];
+  const merged = plain(app.mergeWrappedRefLines(lines));
+  assert.equal(merged.length, 2);
+  assert.match(merged[0], /framework for learning predictive structures from multiple tasks/);
+  assert.match(merged[1], /^Luisa Bentivogli.*In TAC\.$/);
+});
+
+test('parseAuthorYearReferenceLines handles a wrapped two-column PDF bibliography (BERT-style)', () => {
+  const section = [
+    'Jacob Devlin, Ming-Wei Chang, Kenton Lee, and',
+    'Kristina Toutanova. 2018. Bert: Pre-training of',
+    'deep bidirectional transformers for language under-',
+    'standing. arXiv preprint arXiv:1810.04805.',
+    '[Page 12]',
+    'Matthew Peters, Mark Neumann, Mohit Iyyer, Matt',
+    'Gardner, Christopher Clark, Kenton Lee, and Luke',
+    'Zettlemoyer. 2018. Deep contextualized word rep-',
+    'resentations. In Proceedings of NAACL.',
+  ].join('\n');
+  app.parseAuthorYearReferenceLines(section);
+  const refs = app.state.paperReferences;
+  assert.equal(refs.length, 2);
+  assert.match(refs[0].text, /language understanding/); // de-hyphenated
+  // The reassembled entries make author-year matching work again.
+  const m = app.matchCitationToReferences('(Peters et al., 2018)', refs);
+  assert.equal(m?.isCitation, true);
+  assert.equal(m?.matchId, refs[1].id);
+});
+
+test('buildPaperReferences prefers a cached Haiku-extracted bibliography', () => {
+  app.state.extractedReferences = [
+    { id: 1, text: 'Devlin et al. 2018. BERT. arXiv preprint arXiv:1810.04805.', url: null },
+    { id: 2, text: 'Peters et al. 2018. Deep contextualized word representations.', url: null },
+  ];
+  app.state.bibByNumber = { 7: { url: null, refText: 'should not be used', label: 'x' } };
+  app.buildPaperReferences();
+  assert.equal(app.state.paperReferences.length, 2);
+  assert.match(app.state.paperReferences[0].text, /BERT/);
+});
+
+test('parseAuthorYearReferenceLines preserves leading bracket labels as ids', () => {
+  const section =
+    '[Vas17] Vassilevska Williams, V. (2017). Matrix multiplication advances.\n' +
+    '[BLM+20] Blum, A. et al. (2020). Foundations of data science.';
+  app.parseAuthorYearReferenceLines(section);
+  assert.deepEqual(app.state.paperReferences.map((r) => r.id), ['Vas17', 'BLM+20']);
+});
+
+test('buildFallbackCitationFormat author-year pattern compiles and matches (regression)', () => {
+  const fmt = app.buildFallbackCitationFormat({ inTextExamples: ['(Smith, 2020)'] });
+  const ay = fmt.patterns.find((p) => p.matchType === 'author-year');
+  assert.ok(ay);
+  const re = new RegExp(ay.regex, ay.flags); // must not throw
+  assert.ok(re.test('(Smith, 2020)'));
+});
+
+test('buildFallbackCitationFormat emits a label-id pattern for alpha bracket examples', () => {
+  const fmt = app.buildFallbackCitationFormat({ inTextExamples: ['[Vas17]', '[BLM+20]'] });
+  const alpha = fmt.patterns.find((p) => p.matchType === 'label-id');
+  assert.ok(alpha);
+  assert.ok(new RegExp(alpha.regex).test('[Vas17]'));
+});
+
 // ── shouldTryCitationPreview ─────────────────────────────────────────────────
 test('shouldTryCitationPreview is true for citation-shaped text and false for long prose', () => {
   app.state.paperReferences = REFS;

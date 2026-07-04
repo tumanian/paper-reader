@@ -120,8 +120,11 @@ function normalizeCitationMatch(parsed) {
   }
   if (typeof parsed.isCitation !== 'boolean') return null;
   if (parsed.matchId != null && parsed.matchId !== 'null') {
-    parsed.matchId = Number(parsed.matchId);
-    if (Number.isNaN(parsed.matchId)) parsed.matchId = null;
+    // Bibliography ids may be alphanumeric labels ([Vas17]), not just numbers.
+    const raw = String(parsed.matchId).trim();
+    const n = Number(raw);
+    if (raw && !Number.isNaN(n)) parsed.matchId = n;
+    else parsed.matchId = raw ? raw.slice(0, 40) : null;
   } else {
     parsed.matchId = null;
   }
@@ -136,12 +139,12 @@ function parseCitationMatchFromText(raw) {
 
   const isCitation = raw.match(/"isCitation"\s*:\s*(true|false)/i);
   if (!isCitation) return null;
-  const matchId = raw.match(/"matchId"\s*:\s*(\d+|null)/i);
+  const matchId = raw.match(/"matchId"\s*:\s*(?:"([^"]{1,40})"|(\d+)|null)/i);
   const confidence = raw.match(/"confidence"\s*:\s*([\d.]+)/);
   const reason = raw.match(/"reason"\s*:\s*"([^"]*)"/);
   return normalizeCitationMatch({
     isCitation: isCitation[1].toLowerCase() === 'true',
-    matchId: matchId && matchId[1] !== 'null' ? Number(matchId[1]) : null,
+    matchId: matchId ? (matchId[2] != null ? Number(matchId[2]) : matchId[1]) : null,
     confidence: confidence ? Number(confidence[1]) : null,
     reason: reason ? reason[1] : null,
   });
@@ -518,9 +521,10 @@ async function callCitationMatch(body) {
     'Match a selected in-text citation to one entry in the paper\'s bibliography. ' +
     'The selection is just the citation key and may be incomplete (e.g. "Casper et al., 2024" or "[12"). ' +
     'Reply with a single JSON object only — no markdown fences, no extra text. ' +
-    '{"isCitation":boolean,"matchId":number|null,"confidence":0-1,"reason":"brief"}. ' +
+    '{"isCitation":boolean,"matchId":number|string|null,"confidence":0-1,"reason":"brief"}. ' +
     'matchId is the [id] from the bibliography list. Keep reason under 80 characters. ' +
-    'Match on author surname(s) + year for author-year keys, or the number for numeric keys. ' +
+    'Match on author surname(s) + year for author-year keys, the number for numeric keys, ' +
+    'or the exact bracket label (e.g. Vas17) for alphanumeric keys. ' +
     'Search the FULL list (relevant entries are listed first). Return matchId when found; ' +
     'use null only if the key truly has no matching bibliography entry.';
 
@@ -564,7 +568,7 @@ async function callCitationMatch(body) {
 
   // Trust Haiku. No verifier: if it returns an index that exists in the
   // bibliography, use it directly (lookup by index).
-  const matchId = parsed.matchId != null ? Number(parsed.matchId) : null;
+  const matchId = parsed.matchId != null ? parsed.matchId : null;
   const inBib = matchId != null && references.some((r) => r.id == matchId);
 
   return {
@@ -735,7 +739,7 @@ function validateCitationPatterns(patterns) {
         name: String(p.name || 'pattern').slice(0, 40),
         regex: p.regex,
         flags,
-        matchType: ['numeric-id', 'author-year', 'unknown'].includes(p.matchType) ? p.matchType : 'unknown',
+        matchType: ['numeric-id', 'author-year', 'label-id', 'unknown'].includes(p.matchType) ? p.matchType : 'unknown',
         idGroup: p.idGroup != null ? Number(p.idGroup) : 1,
         authorGroup: p.authorGroup != null ? Number(p.authorGroup) : 1,
         yearGroup: p.yearGroup != null ? Number(p.yearGroup) : 2,
@@ -778,7 +782,19 @@ function inferDefaultCitationPatterns(examples) {
   const patterns = [];
   const hasBracket = ex.some((e) => /\[\d{1,3}\]/.test(String(e)));
   const hasAuthorYear = ex.some((e) => /\([^()]{2,80},\s*(19|20)\d{2}/.test(String(e)));
+  const hasAlphaLabel = ex.some((e) => /\[[A-Za-z][A-Za-z0-9+\-]{1,15}\]/.test(String(e)));
 
+  if (hasAlphaLabel) {
+    patterns.push({
+      name: 'alpha-bracket',
+      regex: '\\[([A-Za-z][A-Za-z0-9+\\-]{1,15})\\]',
+      flags: '',
+      matchType: 'label-id',
+      idGroup: 1,
+      authorGroup: 1,
+      yearGroup: 2,
+    });
+  }
   if (hasBracket || !ex.length) {
     patterns.push({
       name: 'numeric-bracket',
@@ -793,7 +809,7 @@ function inferDefaultCitationPatterns(examples) {
   if (hasAuthorYear || !ex.length) {
     patterns.push({
       name: 'author-year-paren',
-      regex: '\\(([^()]{2,100},\\s*((19|20)\\d{2}[a-z]?)\\)',
+      regex: '\\(([^()]{2,100}),\\s*((19|20)\\d{2}[a-z]?)\\)',
       flags: '',
       matchType: 'author-year',
       idGroup: 1,
@@ -839,9 +855,11 @@ async function callCitationFormatDetect(body) {
     system:
       'Analyze how this academic paper formats in-text citations. ' +
       'Reply with ONLY valid JSON (no markdown, no commentary). ' +
-      'Schema: {"style":"label","description":"one sentence","patterns":[{"name":"...","regex":"...","flags":"","matchType":"numeric-id|author-year","idGroup":1,"authorGroup":1,"yearGroup":2}],"examples":["..."]}. ' +
+      'Schema: {"style":"label","description":"one sentence","patterns":[{"name":"...","regex":"...","flags":"","matchType":"numeric-id|author-year|label-id","idGroup":1,"authorGroup":1,"yearGroup":2}],"examples":["..."]}. ' +
       'patterns: 1-3 entries. regex: JavaScript syntax, double-backslash escapes, max 100 chars. ' +
-      'numeric-id for [12] style. author-year for (Author, 2020) style. idGroup/authorGroup/yearGroup are capture group numbers.',
+      'numeric-id for [12] style. author-year for (Author, 2020) style. ' +
+      'label-id for alphanumeric bracket labels like [Vas17] or [BLM+20]; idGroup captures the label. ' +
+      'idGroup/authorGroup/yearGroup are capture group numbers.',
     userContent: prompt,
   });
 
@@ -858,6 +876,63 @@ async function callCitationFormatDetect(body) {
   }
 
   return { status: 200, json: response };
+}
+
+// Split a references section into individual bibliography entries. Used as a
+// fallback when the client's local splitters fail (e.g. two-column PDFs whose
+// entries arrive as wrapped line fragments). Haiku re-emits the entries, which
+// also repairs hyphenation and rejoined arXiv ids / DOIs.
+async function callBibliographyExtract(body) {
+  const { refText } = body || {};
+  if (!refText || typeof refText !== 'string' || refText.trim().length < 100) {
+    return { status: 400, json: { error: 'Bibliography extract needs the references section text.' } };
+  }
+
+  const result = await callHaiku({
+    // Pinned to the proxy's output ceiling; a very long bibliography may
+    // truncate mid-array — the salvage pass below keeps the complete entries.
+    max_tokens: MAX_OUTPUT_TOKENS,
+    system:
+      'You are given the references section of an academic paper as extracted from a PDF: ' +
+      'entries may be wrapped across lines mid-sentence and words hyphenated at line breaks. ' +
+      'Return ONLY valid JSON (no markdown, no commentary): {"references":[{"label":null,"text":"..."}]}. ' +
+      'One item per bibliography entry, in the original order. ' +
+      'text: the complete entry as a single line, hyphenation repaired, nothing added or dropped. ' +
+      'label: the entry\'s citation key when entries are labeled ("[12]" -> "12", "[Vas17]" -> "Vas17"), else null.',
+    userContent: refText.slice(0, 16000),
+  });
+
+  if (result.status !== 200) return result;
+
+  const parsed = parseJsonFromText(result.text);
+  let list = Array.isArray(parsed?.references) ? parsed.references : null;
+  if (!list) {
+    // Output truncated at the token ceiling loses the closing brackets —
+    // salvage the complete {"label":...,"text":...} objects that made it out.
+    const objs = String(result.text || '').match(/\{[^{}]*"text"\s*:[^{}]*\}/g) || [];
+    const salvaged = [];
+    for (const o of objs) {
+      try { salvaged.push(JSON.parse(o)); } catch (_) {}
+    }
+    if (salvaged.length >= 3) list = salvaged;
+  }
+  if (!list) {
+    return { status: 502, json: { error: 'Bibliography extract returned invalid JSON.' } };
+  }
+
+  const references = [];
+  for (const item of list.slice(0, 300)) {
+    const text = String(item?.text || '').replace(/\s+/g, ' ').trim().slice(0, 800);
+    if (text.length < 20) continue;
+    const label = item?.label != null && String(item.label).trim()
+      ? String(item.label).trim().slice(0, 40) : null;
+    references.push({ label, text });
+  }
+  if (references.length < 3) {
+    return { status: 502, json: { error: 'Bibliography extract found too few entries.' } };
+  }
+
+  return { status: 200, json: { references } };
 }
 
 async function callCitationDetect(body) {
@@ -906,6 +981,7 @@ async function handleChatRequest(body) {
   if (body?.task === 'citation-preview-claude') return callCitationPreviewClaude(body);
   if (body?.task === 'citation-detect') return callCitationDetect(body);
   if (body?.task === 'citation-format-detect') return callCitationFormatDetect(body);
+  if (body?.task === 'bibliography-extract') return callBibliographyExtract(body);
   return callAnthropic(body);
 }
 

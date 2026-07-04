@@ -32,6 +32,9 @@ export let returnToDocName = null;
 export let bibByNumber = {};
 export let paperReferences = [];
 export let citationFormat = null;
+// Haiku-extracted bibliography ({id, text, url} entries), cached per doc for
+// papers whose references section defeats the local splitters.
+export let extractedReferences = null;
 // Full extracted text of the current paper (for context + caching), capped so
 // we never blow past the long-context surcharge threshold. Large, rarely
 // changing data — held by reference, never cloned.
@@ -92,5 +95,6 @@ export function setReturnToDocName(v) { returnToDocName = v; }
 export function setBibByNumber(v) { bibByNumber = v; }
 export function setPaperReferences(v) { paperReferences = v; }
 export function setCitationFormat(v) { citationFormat = v; }
+export function setExtractedReferences(v) { extractedReferences = v; }
 export function setPaperText(v) { paperText = v; }
 export function setPaperRefText(v) { paperRefText = v; }

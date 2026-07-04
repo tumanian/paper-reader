@@ -290,6 +290,124 @@ test('citation-format-detect falls back to built-in patterns when the model is u
   assert.equal(r.json.source, 'fallback');
 });
 
+test('citation-format-detect preserves label-id patterns', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  const haikuJson = {
+    style: 'alpha-bracket',
+    description: 'Alphanumeric bracket labels',
+    patterns: [{ name: 'alpha', regex: '\\[([A-Za-z][A-Za-z0-9+]{1,10})\\]', flags: '', matchType: 'label-id', idGroup: 1 }],
+    examples: ['[Vas17]'],
+  };
+  mockFetch(cap, { content: [{ text: JSON.stringify(haikuJson) }] });
+  const r = await handler.handleChatRequest({
+    task: 'citation-format-detect',
+    bodySample: 'As shown in [Vas17], matrices multiply quickly.',
+    refSample: '[Vas17] Vassilevska Williams. 2017.',
+    inTextExamples: ['[Vas17]'],
+    refCount: 0,
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.patterns[0].matchType, 'label-id');
+});
+
+test('bibliography-extract returns normalized entries from the model JSON', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  const haikuJson = {
+    references: [
+      { label: null, text: 'Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2018. BERT: Pre-training of deep bidirectional transformers. arXiv:1810.04805.' },
+      { label: null, text: 'Matthew Peters et al. 2018. Deep contextualized word representations. In Proceedings of NAACL.' },
+      { label: null, text: 'Rie Kubota Ando and Tong Zhang. 2005. A framework for learning predictive structures. JMLR, 6:1817-1853.' },
+      { label: null, text: 'x' }, // too short — dropped
+    ],
+  };
+  mockFetch(cap, { content: [{ text: JSON.stringify(haikuJson) }] });
+  const r = await handler.handleChatRequest({
+    task: 'bibliography-extract',
+    refText: 'Jacob Devlin, Ming-Wei Chang, Kenton Lee, and\nKristina Toutanova. 2018. Bert: Pre-training of\n'.repeat(3),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.references.length, 3);
+  assert.match(r.json.references[0].text, /BERT/);
+  assert.match(cap.body.model, /haiku/i);
+});
+
+test('bibliography-extract preserves labels when entries are labeled', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  const haikuJson = {
+    references: [
+      { label: 'Vas17', text: 'Vassilevska Williams. Multiplying matrices faster than Coppersmith-Winograd. 2017.' },
+      { label: 'BLM+20', text: 'Blum, A. et al. Foundations of data science. Cambridge University Press, 2020.' },
+      { label: 'CW87', text: 'Coppersmith and Winograd. Matrix multiplication via arithmetic progressions. 1987.' },
+    ],
+  };
+  mockFetch(cap, { content: [{ text: JSON.stringify(haikuJson) }] });
+  const r = await handler.handleChatRequest({
+    task: 'bibliography-extract',
+    refText: '[Vas17] Vassilevska Williams...\n[BLM+20] Blum...\n[CW87] Coppersmith...\n' + 'padding '.repeat(20),
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json.references.map((x) => x.label), ['Vas17', 'BLM+20', 'CW87']);
+});
+
+test('bibliography-extract salvages complete entries from output truncated at the token ceiling', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  const truncated =
+    '{"references":[' +
+    '{"label":null,"text":"Devlin et al. 2018. BERT: Pre-training of deep bidirectional transformers."},' +
+    '{"label":null,"text":"Peters et al. 2018. Deep contextualized word representations. NAACL."},' +
+    '{"label":null,"text":"Ando and Zhang. 2005. A framework for learning predictive structures."},' +
+    '{"label":null,"text":"Brown et al. 2020. Language mod'; // cut mid-entry
+  mockFetch(cap, { content: [{ text: truncated }] });
+  const r = await handler.handleChatRequest({ task: 'bibliography-extract', refText: 'x'.repeat(200) });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.references.length, 3);
+  assert.match(r.json.references[2].text, /predictive structures/);
+});
+
+test('bibliography-extract validates input and rejects bad model output', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const r1 = await handler.handleChatRequest({ task: 'bibliography-extract', refText: 'too short' });
+  assert.equal(r1.status, 400);
+
+  const cap = {};
+  mockFetch(cap, { content: [{ text: 'not json at all' }] });
+  const r2 = await handler.handleChatRequest({ task: 'bibliography-extract', refText: 'x'.repeat(200) });
+  assert.equal(r2.status, 502);
+
+  mockFetch(cap, { content: [{ text: '{"references":[{"label":null,"text":"only one entry long enough here"}]}' }] });
+  const r3 = await handler.handleChatRequest({ task: 'bibliography-extract', refText: 'x'.repeat(200) });
+  assert.equal(r3.status, 502);
+});
+
+test('citation-match accepts a string matchId from the model for alpha labels', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  mockFetch(cap, { content: [{ text: '{"isCitation":true,"matchId":"Vas17","confidence":0.9,"reason":"label match"}' }] });
+  const refs = [
+    { id: 'Vas17', text: 'Vassilevska Williams. Multiplying matrices faster. 2017.' },
+    { id: 'BLM+20', text: 'Blum et al. Foundations of data science. 2020.' },
+  ];
+  const r = await handler.handleChatRequest({ task: 'citation-match', selection: '[Vas17]', references: refs });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.isCitation, true);
+  assert.equal(r.json.matchId, 'Vas17');
+});
+
+test('citation-match rejects a string matchId that is not in the bibliography', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  mockFetch(cap, { content: [{ text: '{"isCitation":true,"matchId":"Nope99","confidence":0.9,"reason":"?"}' }] });
+  const refs = [{ id: 'Vas17', text: 'Vassilevska Williams. 2017.' }];
+  const r = await handler.handleChatRequest({ task: 'citation-match', selection: '[Nope99]', references: refs });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.isCitation, false);
+  assert.equal(r.json.matchId, null);
+});
+
 // ── URL allow-list for the fetch proxies ─────────────────────────────────────
 test('handleFetchRequest rejects private / loopback / non-http targets', async () => {
   for (const bad of ['http://localhost/x', 'http://127.0.0.1/y', 'http://10.0.0.5/z', 'ftp://example.com', 'not a url']) {

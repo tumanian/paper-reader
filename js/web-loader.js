@@ -5,10 +5,10 @@ import { esc, decodeXmlText, resolveMediaUrl, normalizeForMatch } from './util.j
 import { sanitizeHtml } from './sanitize.js';
 import {
   docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions, currentMode,
-  MAX_PAPER_CHARS,
+  extractedReferences, MAX_PAPER_CHARS,
   setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat,
   setBibByNumber, setPaperRefText, setPaperText, setPaperReferences,
-  setActiveId, setPendingSel, setCitationFormatPromise,
+  setActiveId, setPendingSel, setCitationFormatPromise, setExtractedReferences,
 } from './state.js';
 import { docIdFor, loadStore, restoreDiscussions, loadDocSummary, persistCurrentDoc } from './persistence.js';
 import { renderLibrary, updateAuthBar, updateLogoutFab } from './library.js';
@@ -94,6 +94,7 @@ export async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
   replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
   setCitationFormat(saved?.citationFormat || null);
+  setExtractedReferences(saved?.references || null);
 
   try {
     setStatus('Fetching…');
@@ -214,6 +215,7 @@ export async function loadArxivPdf(rawUrl, knownDocId, citationContext = null) {
   replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
   setCitationFormat(saved?.citationFormat || null);
+  setExtractedReferences(saved?.references || null);
 
   const titleSignal = AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined;
 
@@ -308,9 +310,30 @@ export function renderWebArticle(title, html, url) {
 export function buildPaperReferences() {
   setPaperReferences([]);
 
-  for (const [id, entry] of Object.entries(bibByNumber).sort((a, b) => +a[0] - +b[0])) {
+  // A Haiku-extracted bibliography (cached on the doc) exists only when the
+  // local splitters already failed on this paper — trust it first.
+  if (extractedReferences?.length) {
+    paperReferences.push(...extractedReferences);
+    _wlLogCitation('success', 'extract-refs', { count: paperReferences.length, source: 'haiku' });
+    dumpBibliography('haiku');
+    return;
+  }
+
+  // Keys are usually numeric but can be alpha labels ([Vas17]); numerics sort
+  // first in order, labels after, lexicographically.
+  const entries = Object.entries(bibByNumber).sort((a, b) => {
+    const na = +a[0];
+    const nb = +b[0];
+    const aNum = !Number.isNaN(na);
+    const bNum = !Number.isNaN(nb);
+    if (aNum && bNum) return na - nb;
+    if (aNum !== bNum) return aNum ? -1 : 1;
+    return a[0].localeCompare(b[0]);
+  });
+  for (const [id, entry] of entries) {
+    const n = +id;
     paperReferences.push({
-      id: +id,
+      id: Number.isNaN(n) ? id : n,
       text: entry.refText || entry.label || '',
       url: entry.url || null,
     });
@@ -369,12 +392,53 @@ export function parseReferencesFromSection(section) {
   }
 
   if (!paperReferences.length) {
+    const alphaRe = /\[([A-Za-z][A-Za-z0-9+\-]{0,15})\]\s*([\s\S]*?)(?=\[[A-Za-z][A-Za-z0-9+\-]{0,15}\]|$)/g;
+    const found = [];
+    while ((m = alphaRe.exec(section)) !== null) {
+      const text = m[2].replace(/\s+/g, ' ').trim();
+      if (text.length < 8) continue;
+      const resolved = resolveReferenceEntry(`[${m[1]}] ${text}`);
+      found.push({ id: m[1], text, url: resolved.url });
+    }
+    // Require a few hits so stray bracketed words don't masquerade as a bibliography.
+    if (found.length >= 3) paperReferences.push(...found);
+  }
+
+  if (!paperReferences.length) {
     parseAuthorYearReferenceLines(section);
   }
 }
 
+// PDF text extraction yields one physical line per visual line, so a wrapped
+// bibliography entry arrives as several short fragments. Reassemble them:
+// join a line into the previous one when the previous line ends mid-word
+// (hyphen), mid-sentence (no terminal punctuation), or before the entry has a
+// year — real entries virtually always carry one.
+export function mergeWrappedRefLines(lines) {
+  const merged = [];
+  for (const line of lines) {
+    const prev = merged.length ? merged[merged.length - 1] : null;
+    if (prev === null || prev.length > 1200) { merged.push(line); continue; }
+    if (/[A-Za-z]-$/.test(prev)) {
+      merged[merged.length - 1] = prev.slice(0, -1) + line;
+      continue;
+    }
+    const prevComplete = /[.!?]$/.test(prev) && /\b(19|20)\d{2}\b/.test(prev);
+    if (!prevComplete || /^[a-z]/.test(line)) {
+      merged[merged.length - 1] = prev + ' ' + line;
+    } else {
+      merged.push(line);
+    }
+  }
+  return merged;
+}
+
 export function parseAuthorYearReferenceLines(section) {
-  const lines = section.split(/\n+/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const rawLines = section.split(/\n+/)
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter((l) => l && !/^\[Page \d+\]$/.test(l)
+      && !/^(references|bibliography|works cited|acknowledgments?)$/i.test(l));
+  const lines = mergeWrappedRefLines(rawLines);
   let id = 1;
   for (const line of lines) {
     if (line.length < 25) continue;
@@ -383,8 +447,9 @@ export function parseAuthorYearReferenceLines(section) {
     const looksLikeRef = hasYear || /^[A-Z\[\d]/.test(line);
     if (!looksLikeRef) continue;
     const resolved = resolveReferenceEntry(line);
-    paperReferences.push({ id, text: line, url: resolved.url });
-    id++;
+    const labelM = line.match(/^\[([A-Za-z][A-Za-z0-9+\-]{0,15})\]\s*/);
+    paperReferences.push({ id: labelM ? labelM[1] : id, text: line, url: resolved.url });
+    if (!labelM) id++;
   }
 }
 
@@ -420,11 +485,15 @@ export function addBibliographyItem(item) {
   const tag = item.querySelector?.('.ltx_tag_bibitem, .ltx_tag, .label, .citation-number');
   const tagText = tag?.textContent || '';
   const idText = item.id || item.getAttribute?.('data-num') || '';
-  const numMatch = tagText.match(/\[?(\d{1,3})\]?/)
-    || idText.match(/(?:bib\.?|ref\.?)(\d{1,3})/i)
-    || idText.match(/(\d{1,3})$/);
-  if (!numMatch) return;
-  const num = +numMatch[1];
+  // Alpha labels like [Vas17] must be checked before the numeric patterns,
+  // which would otherwise pull the "17" out of the label.
+  const alphaMatch = tagText.trim().match(/^\[?([A-Za-z][A-Za-z0-9+\-]{1,15})\]?$/);
+  const numMatch = alphaMatch ? null
+    : (tagText.match(/\[?(\d{1,3})\]?/)
+      || idText.match(/(?:bib\.?|ref\.?)(\d{1,3})/i)
+      || idText.match(/(\d{1,3})$/));
+  if (!alphaMatch && !numMatch) return;
+  const num = alphaMatch ? alphaMatch[1] : +numMatch[1];
   const text = item.textContent.replace(/\s+/g, ' ').trim();
   if (text.length < 8) return;
   const entry = resolveReferenceEntry(text);

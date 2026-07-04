@@ -1,5 +1,5 @@
 import { esc, timeAgo, simpleHash } from './util.js';
-import { summaryDirty, setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat } from './state.js';
+import { summaryDirty, setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat, setExtractedReferences } from './state.js';
 import { loadStore, restoreDiscussions, loadDocSummary, persistCurrentDoc, maybeUpdateSummary } from './persistence.js';
 
 // Cross-module hooks for loaders/nav still owned by main.js until their modules
@@ -186,6 +186,7 @@ export async function reopenDoc(docId) {
   replaceDiscussions(restoreDiscussions(doc.discussions));
   loadDocSummary(doc);
   setCitationFormat(doc.citationFormat || null);
+  setExtractedReferences(doc.references || null);
 
   if (doc.mode === 'pdf') {
     _setStatus('Loading saved PDF…');

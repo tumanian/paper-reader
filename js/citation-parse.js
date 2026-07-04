@@ -5,9 +5,19 @@
 import { asGlobalRegex } from './util.js';
 import { bibByNumber, paperText, paperReferences, paperRefText, citationFormat } from './state.js';
 
+function matchesLearnedPattern(t) {
+  for (const p of citationFormat?.patterns || []) {
+    try {
+      if (new RegExp(p.regex, p.flags || '').test(t)) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
 export function looksLikeCitation(text) {
   const t = (text || '').trim();
   if (!t || t.length > 220) return false;
+  if (matchesLearnedPattern(t)) return true;
   if (/https?:\/\//i.test(t)) return true;
   if (/\[\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*\]/.test(t)) return true;
   if (/(?:^|\s)\(\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*\)(?:\s|$)/.test(t)) return true;
@@ -81,12 +91,14 @@ export function findReferenceInPaper(num) {
   const refSection = extractReferencesSection(paperText);
   const haystacks = [refSection, paperText];
 
+  // Ids can be alphanumeric labels like "BLM+20" — escape before interpolating.
+  const safe = String(num).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const patterns = [
-    new RegExp(`\\[${num}\\]\\s*[^\\[]*`, 'i'),
-    new RegExp(`^\\s*${num}\\.\\s+(.+)$`, 'm'),
-    new RegExp(`^\\s*${num}\\)\\s+(.+)$`, 'm'),
-    new RegExp(`^\\s*${num}\\s+([A-Za-z].+)$`, 'm'),
-    new RegExp(`\\[${num}\\]\\s*([^\n\\[]{15,400})`, 'i'),
+    new RegExp(`\\[${safe}\\]\\s*[^\\[]*`, 'i'),
+    new RegExp(`^\\s*${safe}\\.\\s+(.+)$`, 'm'),
+    new RegExp(`^\\s*${safe}\\)\\s+(.+)$`, 'm'),
+    new RegExp(`^\\s*${safe}\\s+([A-Za-z].+)$`, 'm'),
+    new RegExp(`\\[${safe}\\]\\s*([^\n\\[]{15,400})`, 'i'),
   ];
   for (const hay of haystacks) {
     if (!hay) continue;
@@ -339,6 +351,12 @@ export function parseCitation(text) {
     return { url: `https://doi.org/${doi}`, label: t, refText: t };
   }
 
+  const stored = matchWithStoredFormat(t, paperReferences, citationFormat);
+  if (stored?.matchId != null) {
+    const ref = paperReferences.find((r) => r.id == stored.matchId);
+    if (ref) return { ...resolveReferenceEntry(ref.text), label: t };
+  }
+
   const bracketMatch = t.match(/\[(\d{1,3})\]/);
   if (bracketMatch) {
     const ref = findReferenceInPaper(+bracketMatch[1]);
@@ -490,6 +508,18 @@ export function buildFallbackCitationFormat(ctx) {
   const patterns = [];
   const hasBracket = examples.some((e) => /\[\d{1,3}\]/.test(String(e)));
   const hasAuthorYear = examples.some((e) => /\([^()]{2,80},\s*(19|20)\d{2}/.test(String(e)));
+  const hasAlphaLabel = examples.some((e) => /\[[A-Za-z][A-Za-z0-9+\-]{1,15}\]/.test(String(e)));
+  if (hasAlphaLabel) {
+    patterns.push({
+      name: 'alpha-bracket',
+      regex: '\\[([A-Za-z][A-Za-z0-9+\\-]{1,15})\\]',
+      flags: '',
+      matchType: 'label-id',
+      idGroup: 1,
+      authorGroup: 1,
+      yearGroup: 2,
+    });
+  }
   if (hasBracket || !examples.length) {
     patterns.push({
       name: 'numeric-bracket',
@@ -504,7 +534,7 @@ export function buildFallbackCitationFormat(ctx) {
   if (hasAuthorYear || !examples.length) {
     patterns.push({
       name: 'author-year-paren',
-      regex: '\\(([^()]{2,100},\\s*((19|20)\\d{2}[a-z]?)\\)',
+      regex: '\\(([^()]{2,100}),\\s*((19|20)\\d{2}[a-z]?)\\)',
       flags: '',
       matchType: 'author-year',
       idGroup: 1,
@@ -542,6 +572,22 @@ export function matchWithStoredFormat(selection, references, format) {
             confidence: 0.98,
             reason: `paper format: ${p.name}`,
           };
+        }
+      }
+
+      if (p.matchType === 'label-id') {
+        const label = String(m[p.idGroup || 1] || '').trim();
+        if (label) {
+          const ref = references.find((r) => String(r.id) === label
+            || String(r.id).toLowerCase() === label.toLowerCase());
+          if (ref) {
+            return {
+              isCitation: true,
+              matchId: ref.id,
+              confidence: 0.98,
+              reason: `paper format: ${p.name}`,
+            };
+          }
         }
       }
 
