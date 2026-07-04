@@ -352,6 +352,22 @@ test('bibliography-extract preserves labels when entries are labeled', async () 
   assert.deepEqual(r.json.references.map((x) => x.label), ['Vas17', 'BLM+20', 'CW87']);
 });
 
+test('bibliography-extract salvages complete entries from output truncated at the token ceiling', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  const truncated =
+    '{"references":[' +
+    '{"label":null,"text":"Devlin et al. 2018. BERT: Pre-training of deep bidirectional transformers."},' +
+    '{"label":null,"text":"Peters et al. 2018. Deep contextualized word representations. NAACL."},' +
+    '{"label":null,"text":"Ando and Zhang. 2005. A framework for learning predictive structures."},' +
+    '{"label":null,"text":"Brown et al. 2020. Language mod'; // cut mid-entry
+  mockFetch(cap, { content: [{ text: truncated }] });
+  const r = await handler.handleChatRequest({ task: 'bibliography-extract', refText: 'x'.repeat(200) });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.references.length, 3);
+  assert.match(r.json.references[2].text, /predictive structures/);
+});
+
 test('bibliography-extract validates input and rejects bad model output', async () => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
   const r1 = await handler.handleChatRequest({ task: 'bibliography-extract', refText: 'too short' });

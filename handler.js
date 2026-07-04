@@ -889,7 +889,9 @@ async function callBibliographyExtract(body) {
   }
 
   const result = await callHaiku({
-    max_tokens: 8000,
+    // Pinned to the proxy's output ceiling; a very long bibliography may
+    // truncate mid-array — the salvage pass below keeps the complete entries.
+    max_tokens: MAX_OUTPUT_TOKENS,
     system:
       'You are given the references section of an academic paper as extracted from a PDF: ' +
       'entries may be wrapped across lines mid-sentence and words hyphenated at line breaks. ' +
@@ -903,7 +905,17 @@ async function callBibliographyExtract(body) {
   if (result.status !== 200) return result;
 
   const parsed = parseJsonFromText(result.text);
-  const list = Array.isArray(parsed?.references) ? parsed.references : null;
+  let list = Array.isArray(parsed?.references) ? parsed.references : null;
+  if (!list) {
+    // Output truncated at the token ceiling loses the closing brackets —
+    // salvage the complete {"label":...,"text":...} objects that made it out.
+    const objs = String(result.text || '').match(/\{[^{}]*"text"\s*:[^{}]*\}/g) || [];
+    const salvaged = [];
+    for (const o of objs) {
+      try { salvaged.push(JSON.parse(o)); } catch (_) {}
+    }
+    if (salvaged.length >= 3) list = salvaged;
+  }
   if (!list) {
     return { status: 502, json: { error: 'Bibliography extract returned invalid JSON.' } };
   }
