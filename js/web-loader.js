@@ -1,7 +1,7 @@
 // Web page + arXiv loading, article rendering, and reference/bibliography
 // extraction. Depends on the pure citation core for reference resolution.
 
-import { esc, decodeXmlText } from './util.js';
+import { esc, decodeXmlText, resolveMediaUrl } from './util.js';
 import {
   docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions,
   MAX_PAPER_CHARS,
@@ -269,6 +269,14 @@ export function renderWebArticle(title, html, url) {
   document.getElementById('article-body').innerHTML = html;
   document.getElementById('paper-name').textContent = title || url;
   document.querySelectorAll('#article-body script').forEach(s => s.remove());
+  // Resolve relative figure/media URLs against the source page so images load
+  // and figure capture can fetch them (root-relative /html/... paths otherwise
+  // resolve to localhost and break cross-origin rasterization).
+  document.querySelectorAll('#article-body img[src]').forEach((img) => {
+    const raw = img.getAttribute('src');
+    const abs = resolveMediaUrl(raw, url);
+    if (abs) img.src = abs;
+  });
   // capture full text for context + caching
   const bodyText = document.getElementById('article-body').innerText || '';
   setPaperText((`${title || ''}\n\n${bodyText}`).slice(0, MAX_PAPER_CHARS));

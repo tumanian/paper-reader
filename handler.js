@@ -933,6 +933,45 @@ async function handleFetchPdfRequest(rawUrl) {
   }
 }
 
+async function handleFetchImageRequest(rawUrl) {
+  const url = String(rawUrl || '').trim();
+  if (!url || !isFetchUrlAllowed(url)) {
+    return { status: 400, json: { error: 'Invalid or disallowed URL.' } };
+  }
+
+  try {
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'PaperReader/1.0 (research tool)',
+        'Accept': 'image/*,*/*',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!r.ok) {
+      return { status: 502, json: { error: `Upstream HTTP ${r.status}` } };
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 64) {
+      return { status: 502, json: { error: 'Upstream returned empty image.' } };
+    }
+    const contentType = (r.headers.get('content-type') || '').split(';')[0].trim();
+    const looksLikeImage = /^image\//i.test(contentType)
+      || /\.(png|jpe?g|gif|webp|svg|bmp|avif)(\?|$)/i.test(url);
+    if (!looksLikeImage) {
+      return { status: 502, json: { error: 'URL did not return an image.' } };
+    }
+    return {
+      status: 200,
+      body: buf,
+      contentType: contentType || 'image/png',
+      finalUrl: r.url,
+    };
+  } catch (err) {
+    return { status: 502, json: { error: 'Image fetch failed: ' + err.message } };
+  }
+}
+
 module.exports = {
   callAnthropic,
   callCheapSummary,
@@ -944,4 +983,5 @@ module.exports = {
   handleChatRequest,
   handleFetchRequest,
   handleFetchPdfRequest,
+  handleFetchImageRequest,
 };

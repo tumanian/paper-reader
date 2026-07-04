@@ -2,10 +2,11 @@
 // (from the PDF page canvas or the web article), which seeds a figure-explain
 // discussion. Also renders the captured image inside the chat.
 
-import { currentDocId, currentMode, addDiscussion, nextColor } from './state.js';
+import { currentDocId, currentMode, docMeta, addDiscussion, nextColor } from './state.js';
 import { persistCurrentDoc } from './persistence.js';
 import { hidePopover } from './selection.js';
 import { normalizePdfSelectionText } from './pdf.js';
+import { resolveMediaUrl } from './util.js';
 
 // Chat deps not yet extracted — wired via setFigureHooks (`_fig`-prefixed).
 let _figOpenChat = () => {};
@@ -15,15 +16,18 @@ export function setFigureHooks({ openChat, paintHighlight } = {}) {
   if (paintHighlight) _figPaintHighlight = paintHighlight;
 }
 
-// TEMPORARY KILL-SWITCH: figure capture is disabled in production while a
-// capture bug is investigated. Flip back to true to re-enable. The code below
-// is kept intact — only the user-facing entry points (top-bar hint, keyboard
-// shortcut, arming, and the onboarding demo) are gated so users don't hit the
-// broken flow. Reading/rendering previously-captured figures stays enabled.
-export const FIGURE_CAPTURE_ENABLED = false;
+// Figure capture can be disabled via FIGURE_CAPTURE_ENABLED=false. Rendering
+// previously-captured figures stays enabled regardless.
+export const FIGURE_CAPTURE_ENABLED = true;
 
 const IS_MAC = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
 const FIGURE_MOD_LABEL = IS_MAC ? '⌘⇧F' : 'Ctrl⇧F';
+
+function articlePageUrl() {
+  return docMeta?.url
+    || document.getElementById('article-source-url')?.querySelector('a')?.href
+    || window.location.href;
+}
 
 let captureArmed = false;
 let _captureEls = null;       // { overlay, banner } while armed
@@ -125,7 +129,7 @@ async function onCaptureMouseUp(e) {
     console.warn('[Figure] capture failed:', err);
   }
   if (!result || !result.dataUrl) {
-    figureToast('Couldn’t capture that region — try boxing a single figure.');
+    figureToast('Couldn’t capture that figure — try reloading the page.');
     return;
   }
   await startFigureDiscussion(result);
@@ -230,8 +234,12 @@ async function captureWebRegion(box) {
   if (best) {
     dataUrl = await rasterizeElementCrop(best.el, best.r, box);
     caption = webCaptionFor(best.el);
+    // Cropping can fail when the on-screen <img> is cross-origin (canvas taint).
+    // Fetch the full source image server-side rather than falling back to a DOM
+    // snapshot, which often captures surrounding text instead of the figure.
+    if (!dataUrl) dataUrl = await captureFullMediaElement(best.el, best.r);
   }
-  if (!dataUrl) {
+  if (!dataUrl && !best) {
     dataUrl = await captureDomRegionFallback(box).catch(() => null);
   }
   if (!dataUrl) return null;
@@ -282,19 +290,21 @@ async function rasterizeElementCrop(el, elRect, box) {
       return cropDrawableToDataUrl(img, elRect.width, elRect.height, elRect, box);
     } catch (_) { return null; }
   }
-  // <img>
+  // <img> — on-screen pixels are usually cross-origin (ar5iv etc.), so draw via
+  // a same-origin blob fetched through our server proxy.
   const natW = el.naturalWidth || elRect.width, natH = el.naturalHeight || elRect.height;
-  try { return cropDrawableToDataUrl(el, natW, natH, elRect, box); } catch (_) {}
-  const src = el.currentSrc || el.src;
-  const viaCors = await loadImage(src, 'anonymous').catch(() => null);
-  if (viaCors) {
-    try { return cropDrawableToDataUrl(viaCors, viaCors.naturalWidth || natW, viaCors.naturalHeight || natH, elRect, box); } catch (_) {}
-  }
+  const src = resolveMediaUrl(el.currentSrc || el.src, articlePageUrl());
   const blobUrl = await fetchImageViaProxy(src).catch(() => null);
   if (blobUrl) {
     try {
       const img = await loadImage(blobUrl);
-      const u = cropDrawableToDataUrl(img, img.naturalWidth || natW, img.naturalHeight || natH, elRect, box);
+      const u = cropDrawableToDataUrl(
+        img,
+        img.naturalWidth || natW,
+        img.naturalHeight || natH,
+        elRect,
+        box,
+      );
       URL.revokeObjectURL(blobUrl);
       return u;
     } catch (_) { URL.revokeObjectURL(blobUrl); }
@@ -302,21 +312,62 @@ async function rasterizeElementCrop(el, elRect, box) {
   return null;
 }
 
-// Reuse the same CORS-proxy hosts the article fetcher uses, but for image
-// BYTES → an object URL we can draw without tainting the canvas.
-async function fetchImageViaProxy(url) {
-  const timeout = AbortSignal.timeout ? AbortSignal.timeout(20000) : undefined;
-  const attempts = [
-    async () => { const r = await fetch(url, { signal: timeout }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); },
-    async () => { const r = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, { signal: timeout }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); },
-    async () => { const r = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`, { signal: timeout }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); },
-  ];
-  for (const attempt of attempts) {
+async function captureFullMediaElement(el, elRect) {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'canvas') {
     try {
-      const blob = await attempt();
-      if (blob && blob.size > 64 && /^image\//.test(blob.type || 'image/')) return URL.createObjectURL(blob);
-    } catch (_) {}
+      const out = document.createElement('canvas');
+      out.width = el.width; out.height = el.height;
+      out.getContext('2d').drawImage(el, 0, 0);
+      return out.toDataURL('image/png');
+    } catch (_) { return null; }
   }
+  if (tag === 'svg') {
+    try {
+      const clone = el.cloneNode(true);
+      clone.setAttribute('width', elRect.width);
+      clone.setAttribute('height', elRect.height);
+      const xml = new XMLSerializer().serializeToString(clone);
+      const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+      const img = await loadImage(url);
+      const out = document.createElement('canvas');
+      out.width = Math.max(1, Math.round(elRect.width));
+      out.height = Math.max(1, Math.round(elRect.height));
+      out.getContext('2d').drawImage(img, 0, 0, out.width, out.height);
+      return out.toDataURL('image/png');
+    } catch (_) { return null; }
+  }
+  if (tag !== 'img') return null;
+  const src = resolveMediaUrl(el.currentSrc || el.src, articlePageUrl());
+  const blobUrl = await fetchImageViaProxy(src).catch(() => null);
+  if (!blobUrl) return null;
+  try {
+    const img = await loadImage(blobUrl);
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, img.naturalWidth || Math.round(elRect.width));
+    out.height = Math.max(1, img.naturalHeight || Math.round(elRect.height));
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(blobUrl);
+    return out.toDataURL('image/png');
+  } catch (_) {
+    URL.revokeObjectURL(blobUrl);
+    return null;
+  }
+}
+
+// Fetch image bytes through our server proxy (same-origin blob, no canvas taint).
+async function fetchImageViaProxy(url) {
+  const resolved = resolveMediaUrl(url, articlePageUrl());
+  const timeout = AbortSignal.timeout ? AbortSignal.timeout(20000) : undefined;
+  try {
+    const r = await fetch(`/api/fetch-image?url=${encodeURIComponent(resolved)}`, { signal: timeout });
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    if (blob && blob.size > 64) return URL.createObjectURL(blob);
+  } catch (_) {}
   return null;
 }
 
