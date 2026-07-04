@@ -857,15 +857,111 @@ async function handleChatRequest(body) {
   return callAnthropic(body);
 }
 
+// ── SSRF guard ──────────────────────────────────────────────────────────────
+// The fetch proxies take a caller-supplied URL, so they must never be usable to
+// reach loopback, link-local (incl. the cloud metadata endpoint 169.254.169.254),
+// or private networks. Node's WHATWG URL parser normalizes IPv4 in decimal/hex/
+// octal forms to dotted-decimal, so we validate the normalized host; for real
+// hostnames we also check the addresses they resolve to (a name can point at an
+// internal IP). Redirects are followed manually and each hop is re-validated so
+// a public URL can't 30x into an internal one.
+
+const dnsPromises = require('dns').promises;
+let dnsLookup = (host) => dnsPromises.lookup(host, { all: true });
+// Test seam: inject a fake resolver so URL-guard tests stay hermetic (no network).
+function _setDnsLookup(fn) { dnsLookup = fn; }
+
+function ipv4Octets(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return null;
+  const o = [m[1], m[2], m[3], m[4]].map(Number);
+  return o.every((n) => n >= 0 && n <= 255) ? o : null;
+}
+
+function isPrivateIPv4(o) {
+  const [a, b] = o;
+  if (a === 0 || a === 10 || a === 127) return true;   // this-net, private, loopback
+  if (a === 169 && b === 254) return true;             // link-local (cloud metadata)
+  if (a === 172 && b >= 16 && b <= 31) return true;    // private
+  if (a === 192 && b === 168) return true;             // private
+  if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT 100.64/10
+  if (a >= 224) return true;                           // multicast + reserved
+  return false;
+}
+
+function isPrivateIPv6(host) {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === '::1' || h === '::') return true;          // loopback / unspecified
+  if (/^f[cd]/.test(h)) return true;                   // unique-local fc00::/7
+  if (/^fe[89ab]/.test(h)) return true;                // link-local fe80::/10
+  let m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h);     // IPv4-mapped, dotted
+  if (m) { const o = ipv4Octets(m[1]); return o ? isPrivateIPv4(o) : true; }
+  m = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h); // IPv4-mapped, hextet
+  if (m) {
+    const hi = parseInt(m[1], 16), lo = parseInt(m[2], 16);
+    return isPrivateIPv4([hi >> 8, hi & 255, lo >> 8, lo & 255]);
+  }
+  return false;
+}
+
+function isPrivateAddress(addr) {
+  const host = String(addr || '').replace(/^\[|\]$/g, '');
+  const o = ipv4Octets(host);
+  if (o) return isPrivateIPv4(o);
+  if (host.includes(':')) return isPrivateIPv6(host);
+  return true; // unrecognized numeric form → treat as unsafe
+}
+
+function isBlockedHostname(host) {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  return h === 'localhost' || h.endsWith('.localhost')
+      || h.endsWith('.local') || h.endsWith('.internal');
+}
+
+function isIpLiteral(host) {
+  const h = host.replace(/^\[|\]$/g, '');
+  return !!ipv4Octets(h) || h.includes(':');
+}
+
+// Synchronous structural check (no DNS): protocol, blocked names, private IP
+// literals. Real hostnames pass here and get the DNS check in assertUrlPublic.
 function isFetchUrlAllowed(rawUrl) {
   let u;
   try { u = new URL(rawUrl); } catch { return false; }
   if (!['http:', 'https:'].includes(u.protocol)) return false;
   const host = u.hostname.toLowerCase();
-  if (host === 'localhost' || host.endsWith('.local')) return false;
-  if (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return false;
-  if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|169\.254\.)/.test(host)) return false;
+  if (isBlockedHostname(host)) return false;
+  if (isIpLiteral(host)) return !isPrivateAddress(host);
   return true;
+}
+
+// Full async check run on every fetch hop: structural + DNS resolution, so a
+// hostname pointing at an internal address is caught too.
+async function assertUrlPublic(rawUrl) {
+  if (!isFetchUrlAllowed(rawUrl)) { const e = new Error('Blocked or invalid URL'); e.ssrf = true; throw e; }
+  const host = new URL(rawUrl).hostname.toLowerCase();
+  if (isIpLiteral(host)) return;
+  let addrs;
+  try { addrs = await dnsLookup(host.replace(/^\[|\]$/g, '')); }
+  catch { const e = new Error('DNS resolution failed'); e.ssrf = true; throw e; }
+  for (const a of (addrs || [])) {
+    if (isPrivateAddress(a.address)) { const e = new Error('URL resolves to a private address'); e.ssrf = true; throw e; }
+  }
+}
+
+// fetch() that follows redirects manually, re-validating each hop so a public
+// URL cannot redirect into an internal one.
+async function safeFetch(rawUrl, opts = {}, maxRedirects = 4) {
+  let current = rawUrl;
+  for (let hop = 0; ; hop++) {
+    await assertUrlPublic(current);
+    const r = await fetch(current, { ...opts, redirect: 'manual' });
+    const redirecting = r.status >= 300 && r.status < 400;
+    const loc = redirecting && r.headers ? (r.headers.get('location') || r.headers.get('Location')) : null;
+    if (!loc) return r;
+    if (hop >= maxRedirects) { const e = new Error('Too many redirects'); e.ssrf = true; throw e; }
+    current = new URL(loc, current).toString();
+  }
 }
 
 async function handleFetchRequest(rawUrl) {
@@ -875,12 +971,11 @@ async function handleFetchRequest(rawUrl) {
   }
 
   try {
-    const r = await fetch(url, {
+    const r = await safeFetch(url, {
       headers: {
         'User-Agent': 'PaperReader/1.0 (research tool)',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
-      redirect: 'follow',
       signal: AbortSignal.timeout(25000),
     });
     if (!r.ok) {
@@ -903,12 +998,11 @@ async function handleFetchPdfRequest(rawUrl) {
   }
 
   try {
-    const r = await fetch(url, {
+    const r = await safeFetch(url, {
       headers: {
         'User-Agent': 'PaperReader/1.0 (research tool)',
         'Accept': 'application/pdf,*/*',
       },
-      redirect: 'follow',
       signal: AbortSignal.timeout(60000),
     });
     if (!r.ok) {
@@ -940,12 +1034,11 @@ async function handleFetchImageRequest(rawUrl) {
   }
 
   try {
-    const r = await fetch(url, {
+    const r = await safeFetch(url, {
       headers: {
         'User-Agent': 'PaperReader/1.0 (research tool)',
         'Accept': 'image/*,*/*',
       },
-      redirect: 'follow',
       signal: AbortSignal.timeout(30000),
     });
     if (!r.ok) {
@@ -984,4 +1077,10 @@ module.exports = {
   handleFetchRequest,
   handleFetchPdfRequest,
   handleFetchImageRequest,
+  // SSRF guard internals (exported for tests).
+  isFetchUrlAllowed,
+  isPrivateAddress,
+  assertUrlPublic,
+  safeFetch,
+  _setDnsLookup,
 };

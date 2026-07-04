@@ -15,6 +15,10 @@ let savedKey;
 beforeEach(() => {
   savedFetch = global.fetch;
   savedKey = process.env.ANTHROPIC_API_KEY;
+  // Resolve any hostname to a public IP so the SSRF DNS guard stays hermetic
+  // (the fetch proxies now validate every host + redirect hop). Real network is
+  // never touched; global.fetch is mocked per-test.
+  handler._setDnsLookup(async () => [{ address: '93.184.216.34', family: 4 }]);
 });
 afterEach(() => {
   global.fetch = savedFetch;
