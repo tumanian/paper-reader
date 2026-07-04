@@ -605,6 +605,7 @@ function sampleCitationContext() {
   const inTextExamples = [];
   const citeRes = [
     /\[[\d,\s\-–—]+\]/g,
+    /\[[A-Za-z][A-Za-z0-9+\-]{1,15}\]/g,
     /\([^()]{3,100}(?:19|20)\d{2}[a-z]?[^()]{0,30}\)/g,
     /\b[A-Z][A-Za-z\-]+(?:\s+(?:&|and)\s+[A-Z][A-Za-z\-]+)+\s*,?\s*(?:19|20)\d{2}[a-z]?/g,
   ];
@@ -620,14 +621,18 @@ function sampleCitationContext() {
 
 
 export async function ensureCitationFormat(force = false) {
-  if (!currentDocId || !paperText || !paperReferences.length) return citationFormat;
+  if (!currentDocId || !paperText) return citationFormat;
   if (citationFormat && !force && citationFormat.refCount === paperReferences.length) {
     return citationFormat;
   }
   if (citationFormatPromise) return citationFormatPromise;
 
+  const ctx = sampleCitationContext();
+  // Zero parsed refs is fine as long as a references section exists — Haiku
+  // can return a refEntryPattern that lets us split it after the fact.
+  if (!paperReferences.length && ctx.refSample.length < 200) return citationFormat;
+
   setCitationFormatPromise((async () => {
-    const ctx = sampleCitationContext();
     try {
       const r = await fetch('/api/chat', {
         method: 'POST',
@@ -662,7 +667,16 @@ export async function ensureCitationFormat(force = false) {
           source: format.source || 'haiku',
         });
       }
+      const hadNoRefs = !paperReferences.length;
       setCitationFormat({ ...format, refCount: paperReferences.length });
+      if (hadNoRefs && format.refEntryPattern) {
+        // The learned refEntryPattern may unlock bibliography splitting that
+        // failed with the hardcoded splitters — retry now that it's in state.
+        buildPaperReferences();
+        if (paperReferences.length) {
+          setCitationFormat({ ...citationFormat, refCount: paperReferences.length });
+        }
+      }
       await persistCurrentDoc();
       return citationFormat;
     } catch (e) {
@@ -738,6 +752,9 @@ export async function loadCitationPreview() {
   const logKey = citeLogKey(expandedSelection);
 
   if (!paperReferences.length) {
+    // Still learn the paper's format in the background: a refEntryPattern can
+    // recover the bibliography for the next selection.
+    void ensureCitationFormat();
     try {
       await loadCitationPreviewWithoutBibliography({
         el, citeBtn, readLaterBtn, expandedSelection, passage, logKey, signal,

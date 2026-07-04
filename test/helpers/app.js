@@ -69,7 +69,7 @@ const SHIM = `
       shouldTryCitationPreview, findNearbyContext, buildPaperBlock, buildDocContext,
       esc, renderPreviewHtml, md, timeAgo, resolveMediaUrl,
       sanitizeOnboarding, sanitizeOnboardingActionCache, isTodoValue, normalizeForMatch, getFeaturedPaper,
-      buildPaperReferences, parseReferencesFromSection, parseAuthorYearReferenceLines, expandSelectionText,
+      buildPaperReferences, parseReferencesFromSection, parseAuthorYearReferenceLines, parseReferencesWithPattern, expandSelectionText,
       initStorage, loadStore, persistCurrentDoc,
       sendMessage, callClaude, buildRatingRecord, ratingIdFor,
     },

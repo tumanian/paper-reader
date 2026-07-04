@@ -5,7 +5,7 @@ import { esc, decodeXmlText, resolveMediaUrl, normalizeForMatch } from './util.j
 import { sanitizeHtml } from './sanitize.js';
 import {
   docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions, currentMode,
-  MAX_PAPER_CHARS,
+  citationFormat, MAX_PAPER_CHARS,
   setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat,
   setBibByNumber, setPaperRefText, setPaperText, setPaperReferences,
   setActiveId, setPendingSel, setCitationFormatPromise,
@@ -308,9 +308,21 @@ export function renderWebArticle(title, html, url) {
 export function buildPaperReferences() {
   setPaperReferences([]);
 
-  for (const [id, entry] of Object.entries(bibByNumber).sort((a, b) => +a[0] - +b[0])) {
+  // Keys are usually numeric but can be alpha labels ([Vas17]); numerics sort
+  // first in order, labels after, lexicographically.
+  const entries = Object.entries(bibByNumber).sort((a, b) => {
+    const na = +a[0];
+    const nb = +b[0];
+    const aNum = !Number.isNaN(na);
+    const bNum = !Number.isNaN(nb);
+    if (aNum && bNum) return na - nb;
+    if (aNum !== bNum) return aNum ? -1 : 1;
+    return a[0].localeCompare(b[0]);
+  });
+  for (const [id, entry] of entries) {
+    const n = +id;
     paperReferences.push({
-      id: +id,
+      id: Number.isNaN(n) ? id : n,
       text: entry.refText || entry.label || '',
       url: entry.url || null,
     });
@@ -369,8 +381,59 @@ export function parseReferencesFromSection(section) {
   }
 
   if (!paperReferences.length) {
+    const alphaRe = /\[([A-Za-z][A-Za-z0-9+\-]{0,15})\]\s*([\s\S]*?)(?=\[[A-Za-z][A-Za-z0-9+\-]{0,15}\]|$)/g;
+    const found = [];
+    while ((m = alphaRe.exec(section)) !== null) {
+      const text = m[2].replace(/\s+/g, ' ').trim();
+      if (text.length < 8) continue;
+      const resolved = resolveReferenceEntry(`[${m[1]}] ${text}`);
+      found.push({ id: m[1], text, url: resolved.url });
+    }
+    // Require a few hits so stray bracketed words don't masquerade as a bibliography.
+    if (found.length >= 3) paperReferences.push(...found);
+  }
+
+  if (!paperReferences.length && citationFormat?.refEntryPattern) {
+    paperReferences.push(...parseReferencesWithPattern(section, citationFormat.refEntryPattern));
+  }
+
+  if (!paperReferences.length) {
     parseAuthorYearReferenceLines(section);
   }
+}
+
+// Split a references section using the Haiku-learned refEntryPattern — a regex
+// matching the start of each entry with an optional label capture group.
+export function parseReferencesWithPattern(section, rep) {
+  if (!section || !rep?.regex) return [];
+  let re;
+  try {
+    let flags = String(rep.flags || '').replace(/[^gimsuy]/g, '');
+    if (!flags.includes('g')) flags += 'g';
+    re = new RegExp(rep.regex, flags);
+  } catch { return []; }
+
+  const starts = [];
+  for (const m of section.matchAll(re)) {
+    if (m[0].length === 0) return []; // zero-width pattern: reject outright
+    const label = rep.labelGroup > 0 ? String(m[rep.labelGroup] || '').trim() : '';
+    starts.push({ index: m.index, markerLen: m[0].length, label });
+    if (starts.length > 400) break;
+  }
+  if (starts.length < 3) return [];
+
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < starts.length; i++) {
+    const end = i + 1 < starts.length ? starts[i + 1].index : section.length;
+    const text = section.slice(starts[i].index + starts[i].markerLen, end).replace(/\s+/g, ' ').trim();
+    if (text.length < 20 || text.length > 1500) continue;
+    let id = starts[i].label;
+    if (!id || seen.has(id)) id = out.length + 1;
+    seen.add(String(id));
+    out.push({ id, text, url: resolveReferenceEntry(text).url });
+  }
+  return out.length >= 3 ? out : [];
 }
 
 export function parseAuthorYearReferenceLines(section) {
@@ -383,8 +446,9 @@ export function parseAuthorYearReferenceLines(section) {
     const looksLikeRef = hasYear || /^[A-Z\[\d]/.test(line);
     if (!looksLikeRef) continue;
     const resolved = resolveReferenceEntry(line);
-    paperReferences.push({ id, text: line, url: resolved.url });
-    id++;
+    const labelM = line.match(/^\[([A-Za-z][A-Za-z0-9+\-]{0,15})\]\s*/);
+    paperReferences.push({ id: labelM ? labelM[1] : id, text: line, url: resolved.url });
+    if (!labelM) id++;
   }
 }
 
@@ -420,11 +484,15 @@ export function addBibliographyItem(item) {
   const tag = item.querySelector?.('.ltx_tag_bibitem, .ltx_tag, .label, .citation-number');
   const tagText = tag?.textContent || '';
   const idText = item.id || item.getAttribute?.('data-num') || '';
-  const numMatch = tagText.match(/\[?(\d{1,3})\]?/)
-    || idText.match(/(?:bib\.?|ref\.?)(\d{1,3})/i)
-    || idText.match(/(\d{1,3})$/);
-  if (!numMatch) return;
-  const num = +numMatch[1];
+  // Alpha labels like [Vas17] must be checked before the numeric patterns,
+  // which would otherwise pull the "17" out of the label.
+  const alphaMatch = tagText.trim().match(/^\[?([A-Za-z][A-Za-z0-9+\-]{1,15})\]?$/);
+  const numMatch = alphaMatch ? null
+    : (tagText.match(/\[?(\d{1,3})\]?/)
+      || idText.match(/(?:bib\.?|ref\.?)(\d{1,3})/i)
+      || idText.match(/(\d{1,3})$/));
+  if (!alphaMatch && !numMatch) return;
+  const num = alphaMatch ? alphaMatch[1] : +numMatch[1];
   const text = item.textContent.replace(/\s+/g, ' ').trim();
   if (text.length < 8) return;
   const entry = resolveReferenceEntry(text);

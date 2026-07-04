@@ -120,8 +120,11 @@ function normalizeCitationMatch(parsed) {
   }
   if (typeof parsed.isCitation !== 'boolean') return null;
   if (parsed.matchId != null && parsed.matchId !== 'null') {
-    parsed.matchId = Number(parsed.matchId);
-    if (Number.isNaN(parsed.matchId)) parsed.matchId = null;
+    // Bibliography ids may be alphanumeric labels ([Vas17]), not just numbers.
+    const raw = String(parsed.matchId).trim();
+    const n = Number(raw);
+    if (raw && !Number.isNaN(n)) parsed.matchId = n;
+    else parsed.matchId = raw ? raw.slice(0, 40) : null;
   } else {
     parsed.matchId = null;
   }
@@ -136,12 +139,12 @@ function parseCitationMatchFromText(raw) {
 
   const isCitation = raw.match(/"isCitation"\s*:\s*(true|false)/i);
   if (!isCitation) return null;
-  const matchId = raw.match(/"matchId"\s*:\s*(\d+|null)/i);
+  const matchId = raw.match(/"matchId"\s*:\s*(?:"([^"]{1,40})"|(\d+)|null)/i);
   const confidence = raw.match(/"confidence"\s*:\s*([\d.]+)/);
   const reason = raw.match(/"reason"\s*:\s*"([^"]*)"/);
   return normalizeCitationMatch({
     isCitation: isCitation[1].toLowerCase() === 'true',
-    matchId: matchId && matchId[1] !== 'null' ? Number(matchId[1]) : null,
+    matchId: matchId ? (matchId[2] != null ? Number(matchId[2]) : matchId[1]) : null,
     confidence: confidence ? Number(confidence[1]) : null,
     reason: reason ? reason[1] : null,
   });
@@ -518,9 +521,10 @@ async function callCitationMatch(body) {
     'Match a selected in-text citation to one entry in the paper\'s bibliography. ' +
     'The selection is just the citation key and may be incomplete (e.g. "Casper et al., 2024" or "[12"). ' +
     'Reply with a single JSON object only — no markdown fences, no extra text. ' +
-    '{"isCitation":boolean,"matchId":number|null,"confidence":0-1,"reason":"brief"}. ' +
+    '{"isCitation":boolean,"matchId":number|string|null,"confidence":0-1,"reason":"brief"}. ' +
     'matchId is the [id] from the bibliography list. Keep reason under 80 characters. ' +
-    'Match on author surname(s) + year for author-year keys, or the number for numeric keys. ' +
+    'Match on author surname(s) + year for author-year keys, the number for numeric keys, ' +
+    'or the exact bracket label (e.g. Vas17) for alphanumeric keys. ' +
     'Search the FULL list (relevant entries are listed first). Return matchId when found; ' +
     'use null only if the key truly has no matching bibliography entry.';
 
@@ -564,7 +568,7 @@ async function callCitationMatch(body) {
 
   // Trust Haiku. No verifier: if it returns an index that exists in the
   // bibliography, use it directly (lookup by index).
-  const matchId = parsed.matchId != null ? Number(parsed.matchId) : null;
+  const matchId = parsed.matchId != null ? parsed.matchId : null;
   const inBib = matchId != null && references.some((r) => r.id == matchId);
 
   return {
@@ -735,7 +739,7 @@ function validateCitationPatterns(patterns) {
         name: String(p.name || 'pattern').slice(0, 40),
         regex: p.regex,
         flags,
-        matchType: ['numeric-id', 'author-year', 'unknown'].includes(p.matchType) ? p.matchType : 'unknown',
+        matchType: ['numeric-id', 'author-year', 'label-id', 'unknown'].includes(p.matchType) ? p.matchType : 'unknown',
         idGroup: p.idGroup != null ? Number(p.idGroup) : 1,
         authorGroup: p.authorGroup != null ? Number(p.authorGroup) : 1,
         yearGroup: p.yearGroup != null ? Number(p.yearGroup) : 2,
@@ -743,6 +747,18 @@ function validateCitationPatterns(patterns) {
     } catch (_) {}
   }
   return out;
+}
+
+function validateRefEntryPattern(p) {
+  if (!p?.regex || typeof p.regex !== 'string' || p.regex.length > 300) return null;
+  let flags = String(p.flags || '').replace(/[^gimsuy]/g, '');
+  if (!flags.includes('g')) flags += 'g';
+  if (!flags.includes('m')) flags += 'm';
+  try {
+    new RegExp(p.regex, flags);
+  } catch (_) { return null; }
+  const labelGroup = p.labelGroup != null && !Number.isNaN(Number(p.labelGroup)) ? Number(p.labelGroup) : 1;
+  return { regex: p.regex, flags, labelGroup };
 }
 
 function parseCitationFormatFromText(raw) {
@@ -778,7 +794,19 @@ function inferDefaultCitationPatterns(examples) {
   const patterns = [];
   const hasBracket = ex.some((e) => /\[\d{1,3}\]/.test(String(e)));
   const hasAuthorYear = ex.some((e) => /\([^()]{2,80},\s*(19|20)\d{2}/.test(String(e)));
+  const hasAlphaLabel = ex.some((e) => /\[[A-Za-z][A-Za-z0-9+\-]{1,15}\]/.test(String(e)));
 
+  if (hasAlphaLabel) {
+    patterns.push({
+      name: 'alpha-bracket',
+      regex: '\\[([A-Za-z][A-Za-z0-9+\\-]{1,15})\\]',
+      flags: '',
+      matchType: 'label-id',
+      idGroup: 1,
+      authorGroup: 1,
+      yearGroup: 2,
+    });
+  }
   if (hasBracket || !ex.length) {
     patterns.push({
       name: 'numeric-bracket',
@@ -793,7 +821,7 @@ function inferDefaultCitationPatterns(examples) {
   if (hasAuthorYear || !ex.length) {
     patterns.push({
       name: 'author-year-paren',
-      regex: '\\(([^()]{2,100},\\s*((19|20)\\d{2}[a-z]?)\\)',
+      regex: '\\(([^()]{2,100}),\\s*((19|20)\\d{2}[a-z]?)\\)',
       flags: '',
       matchType: 'author-year',
       idGroup: 1,
@@ -813,6 +841,7 @@ function buildCitationFormatResponse(parsed, examples, refCount, source) {
     style: parsed?.style ? String(parsed.style).slice(0, 80) : (source === 'fallback' ? 'default' : 'unknown'),
     description: parsed?.description ? String(parsed.description).slice(0, 200) : null,
     patterns: fallback,
+    refEntryPattern: validateRefEntryPattern(parsed?.refEntryPattern),
     examples: Array.isArray(parsed?.examples) ? parsed.examples.slice(0, 8).map(String) : (examples || []).slice(0, 8),
     refCount: refCount || null,
     learnedAt: Date.now(),
@@ -835,13 +864,18 @@ async function callCitationFormatDetect(body) {
     `Bibliography entry count: ${refCount || 'unknown'}`;
 
   const result = await callHaiku({
-    max_tokens: 600,
+    max_tokens: 700,
     system:
       'Analyze how this academic paper formats in-text citations. ' +
       'Reply with ONLY valid JSON (no markdown, no commentary). ' +
-      'Schema: {"style":"label","description":"one sentence","patterns":[{"name":"...","regex":"...","flags":"","matchType":"numeric-id|author-year","idGroup":1,"authorGroup":1,"yearGroup":2}],"examples":["..."]}. ' +
+      'Schema: {"style":"label","description":"one sentence","patterns":[{"name":"...","regex":"...","flags":"","matchType":"numeric-id|author-year|label-id","idGroup":1,"authorGroup":1,"yearGroup":2}],"examples":["..."]}. ' +
       'patterns: 1-3 entries. regex: JavaScript syntax, double-backslash escapes, max 100 chars. ' +
-      'numeric-id for [12] style. author-year for (Author, 2020) style. idGroup/authorGroup/yearGroup are capture group numbers.',
+      'numeric-id for [12] style. author-year for (Author, 2020) style. ' +
+      'label-id for alphanumeric bracket labels like [Vas17] or [BLM+20]; idGroup captures the label. ' +
+      'idGroup/authorGroup/yearGroup are capture group numbers. ' +
+      'If the bibliography entry count is 0 or the parsed entries look wrong, ALSO return ' +
+      '"refEntryPattern":{"regex":"...","flags":"gm","labelGroup":1} — a regex matching the start of each entry ' +
+      'in the references section sample, capturing its label (labelGroup 0 if entries are unlabeled).',
     userContent: prompt,
   });
 

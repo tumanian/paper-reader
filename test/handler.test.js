@@ -290,6 +290,77 @@ test('citation-format-detect falls back to built-in patterns when the model is u
   assert.equal(r.json.source, 'fallback');
 });
 
+test('citation-format-detect preserves label-id patterns and normalizes refEntryPattern', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  const haikuJson = {
+    style: 'alpha-bracket',
+    description: 'Alphanumeric bracket labels',
+    patterns: [{ name: 'alpha', regex: '\\[([A-Za-z][A-Za-z0-9+]{1,10})\\]', flags: '', matchType: 'label-id', idGroup: 1 }],
+    refEntryPattern: { regex: '^\\[([A-Za-z][A-Za-z0-9+]{1,10})\\]', flags: 'm', labelGroup: 1 },
+    examples: ['[Vas17]'],
+  };
+  mockFetch(cap, { content: [{ text: JSON.stringify(haikuJson) }] });
+  const r = await handler.handleChatRequest({
+    task: 'citation-format-detect',
+    bodySample: 'As shown in [Vas17], matrices multiply quickly.',
+    refSample: '[Vas17] Vassilevska Williams. 2017.',
+    inTextExamples: ['[Vas17]'],
+    refCount: 0,
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.patterns[0].matchType, 'label-id');
+  assert.ok(r.json.refEntryPattern);
+  assert.ok(r.json.refEntryPattern.flags.includes('g'));
+  assert.equal(r.json.refEntryPattern.labelGroup, 1);
+});
+
+test('citation-format-detect nulls an invalid refEntryPattern but keeps the patterns', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  const haikuJson = {
+    style: 'numeric',
+    patterns: [{ name: 'num', regex: '\\[(\\d{1,3})\\]', flags: '', matchType: 'numeric-id', idGroup: 1 }],
+    refEntryPattern: { regex: '(', flags: '' },
+    examples: ['[12]'],
+  };
+  mockFetch(cap, { content: [{ text: JSON.stringify(haikuJson) }] });
+  const r = await handler.handleChatRequest({
+    task: 'citation-format-detect',
+    bodySample: 'Cited as [12] here.',
+    inTextExamples: ['[12]'],
+    refCount: 30,
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.refEntryPattern, null);
+  assert.equal(r.json.patterns.length, 1);
+});
+
+test('citation-match accepts a string matchId from the model for alpha labels', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  mockFetch(cap, { content: [{ text: '{"isCitation":true,"matchId":"Vas17","confidence":0.9,"reason":"label match"}' }] });
+  const refs = [
+    { id: 'Vas17', text: 'Vassilevska Williams. Multiplying matrices faster. 2017.' },
+    { id: 'BLM+20', text: 'Blum et al. Foundations of data science. 2020.' },
+  ];
+  const r = await handler.handleChatRequest({ task: 'citation-match', selection: '[Vas17]', references: refs });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.isCitation, true);
+  assert.equal(r.json.matchId, 'Vas17');
+});
+
+test('citation-match rejects a string matchId that is not in the bibliography', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  mockFetch(cap, { content: [{ text: '{"isCitation":true,"matchId":"Nope99","confidence":0.9,"reason":"?"}' }] });
+  const refs = [{ id: 'Vas17', text: 'Vassilevska Williams. 2017.' }];
+  const r = await handler.handleChatRequest({ task: 'citation-match', selection: '[Nope99]', references: refs });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.isCitation, false);
+  assert.equal(r.json.matchId, null);
+});
+
 // ── URL allow-list for the fetch proxies ─────────────────────────────────────
 test('handleFetchRequest rejects private / loopback / non-http targets', async () => {
   for (const bad of ['http://localhost/x', 'http://127.0.0.1/y', 'http://10.0.0.5/z', 'ftp://example.com', 'not a url']) {
