@@ -11,15 +11,29 @@ const handler = require('../handler.js');
 
 let savedFetch;
 let savedKey;
+const CEILING_VARS = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'DAILY_REQUEST_LIMIT'];
+let savedCeiling;
 
 beforeEach(() => {
   savedFetch = global.fetch;
   savedKey = process.env.ANTHROPIC_API_KEY;
+  // Isolate the global-ceiling config: unset by default so tests that don't opt
+  // in run with the ceiling disabled (no extra counter fetch).
+  savedCeiling = {};
+  for (const k of CEILING_VARS) { savedCeiling[k] = process.env[k]; delete process.env[k]; }
+  // Resolve any hostname to a public IP so the SSRF DNS guard stays hermetic
+  // (the fetch proxies now validate every host + redirect hop). Real network is
+  // never touched; global.fetch is mocked per-test.
+  handler._setDnsLookup(async () => [{ address: '93.184.216.34', family: 4 }]);
 });
 afterEach(() => {
   global.fetch = savedFetch;
   if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
   else process.env.ANTHROPIC_API_KEY = savedKey;
+  for (const k of CEILING_VARS) {
+    if (savedCeiling[k] === undefined) delete process.env[k];
+    else process.env[k] = savedCeiling[k];
+  }
 });
 
 function mockFetch(captured, response = { content: [{ text: 'ok' }] }, status = 200) {
@@ -59,13 +73,38 @@ test('callAnthropic sends the API key header and the Anthropic endpoint', async 
   assert.equal(cap.opts.headers['anthropic-version'], '2023-06-01');
 });
 
-test('callAnthropic passes model through and defaults max_tokens to 1000', async () => {
+test('callAnthropic coerces an unknown model to the default and defaults max_tokens to 1000', async () => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
   const cap = {};
   mockFetch(cap);
   await handler.callAnthropic({ model: 'claude-custom-9', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(cap.body.model, 'claude-custom-9');
+  assert.equal(cap.body.model, 'claude-sonnet-4-6', 'unknown model pinned to the default');
   assert.equal(cap.body.max_tokens, 1000);
+});
+
+test('callAnthropic passes an allow-listed model through', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  mockFetch(cap);
+  await handler.callAnthropic({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(cap.body.model, 'claude-haiku-4-5');
+});
+
+test('callAnthropic clamps an over-ceiling max_tokens', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const cap = {};
+  mockFetch(cap);
+  await handler.callAnthropic({ max_tokens: 999999, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(cap.body.max_tokens, 4096);
+});
+
+test('callAnthropic rejects an oversize payload with 413 before calling upstream', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  global.fetch = async () => { throw new Error('must not call upstream for an oversize request'); };
+  const huge = 'x'.repeat(2100000);
+  const r = await handler.callAnthropic({ messages: [{ role: 'user', content: huge }] });
+  assert.equal(r.status, 413);
+  assert.match(r.json.error, /too large/i);
 });
 
 test('callAnthropic forwards a STRING system field untouched', async () => {
@@ -107,6 +146,68 @@ test('callAnthropic forwards image content blocks in messages intact', async () 
   assert.equal(block.source.media_type, 'image/png');
   assert.equal(block.source.data, 'AAAA');
   assert.equal(cap.body.messages[0].content[1].text, 'explain this figure');
+});
+
+// ── Global daily ceiling ─────────────────────────────────────────────────────
+function ceilingConfig(limit) {
+  process.env.SUPABASE_URL = 'https://fake.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-secret';
+  if (limit != null) process.env.DAILY_REQUEST_LIMIT = String(limit);
+}
+
+test('callAnthropic returns 429 (and skips the model) when over the daily ceiling', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  ceilingConfig(5);
+  const seen = [];
+  global.fetch = async (url) => {
+    seen.push(String(url));
+    if (String(url).includes('/rpc/bump_api_usage')) return { ok: true, status: 200, json: async () => 6 };
+    throw new Error('must not call Anthropic when over the ceiling');
+  };
+  const r = await handler.callAnthropic({ messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 429);
+  assert.match(r.json.error, /limit/i);
+  assert.ok(seen.some((u) => u.includes('/rpc/bump_api_usage')), 'counter was consulted');
+  assert.ok(!seen.some((u) => u.includes('api.anthropic.com')), 'model was not called');
+});
+
+test('callAnthropic proceeds to the model when under the daily ceiling', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  ceilingConfig(100);
+  const cap = {};
+  global.fetch = async (url, opts) => {
+    if (String(url).includes('/rpc/bump_api_usage')) return { ok: true, status: 200, json: async () => 3 };
+    cap.url = url;
+    return { status: 200, json: async () => ({ content: [{ text: 'ok' }] }) };
+  };
+  const r = await handler.callAnthropic({ messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200);
+  assert.equal(cap.url, 'https://api.anthropic.com/v1/messages');
+});
+
+test('callAnthropic fails open (still calls the model) when the counter RPC errors', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  ceilingConfig(5);
+  let calledModel = false;
+  global.fetch = async (url) => {
+    if (String(url).includes('/rpc/bump_api_usage')) return { ok: false, status: 500, json: async () => ({}) };
+    calledModel = true;
+    return { status: 200, json: async () => ({ content: [{ text: 'ok' }] }) };
+  };
+  const r = await handler.callAnthropic({ messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200);
+  assert.ok(calledModel, 'a counter hiccup must never block legitimate traffic');
+});
+
+test('callAnthropic skips the ceiling entirely when Supabase is not configured', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  const seen = [];
+  global.fetch = async (url) => {
+    seen.push(String(url));
+    return { status: 200, json: async () => ({ content: [{ text: 'ok' }] }) };
+  };
+  await handler.callAnthropic({ messages: [{ role: 'user', content: 'x' }] });
+  assert.ok(!seen.some((u) => u.includes('/rpc/bump_api_usage')), 'no counter call when unconfigured');
 });
 
 test('callAnthropic maps an upstream fetch throw to a 502', async () => {

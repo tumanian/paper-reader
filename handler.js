@@ -4,6 +4,47 @@
 const DEFAULT_CHAT_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5';
 
+// Caller-influenced limits for the chat proxy. Until per-user auth/rate limiting
+// lands, these cap the per-request cost an unauthenticated caller can drive:
+// pin the model to the two the app actually uses, ceiling the output tokens, and
+// bound total payload size. Input can be large by design — the full paper (up to
+// MAX_PAPER_CHARS ~600k chars) rides in the cached system block — so the size
+// cap is deliberately generous.
+const ALLOWED_MODELS = new Set([DEFAULT_CHAT_MODEL, DEFAULT_HAIKU_MODEL]);
+const MAX_OUTPUT_TOKENS = 4096;
+const MAX_REQUEST_CHARS = 2000000;
+
+// Global daily circuit-breaker for total model calls. Serverless functions are
+// stateless, so the counter lives in Supabase (a single row per day, bumped via
+// an atomic RPC) and is shared across every invocation. It's a coarse cost cap —
+// per-IP throttling is handled at the edge (Cloudflare); this stops a runaway
+// total from any source. Disabled (fail-open) when Supabase isn't configured, so
+// local dev and Supabase-less deploys are unaffected. Uses the SERVICE ROLE key,
+// which is server-only and never sent to the browser.
+async function overGlobalCeiling() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return false; // not configured → ceiling disabled
+  const limit = Number(process.env.DAILY_REQUEST_LIMIT) || 2000;
+  try {
+    const r = await fetch(`${url.replace(/\/$/, '')}/rest/v1/rpc/bump_api_usage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({ p_amount: 1 }),
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) return false; // counter error → fail open (edge rules still apply)
+    const count = Number(await r.json());
+    return Number.isFinite(count) && count > limit;
+  } catch {
+    return false; // never let the counter itself take the app down
+  }
+}
+
 async function callAnthropic(body) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -15,11 +56,27 @@ async function callAnthropic(body) {
     return { status: 400, json: { error: 'Request must include a messages array.' } };
   }
 
+  // Clamp caller-influenced fields (see limits above): pin the model to the
+  // allow-list and ceiling the output tokens so the proxy can't be pushed into
+  // an expensive request.
+  const safeModel = ALLOWED_MODELS.has(model) ? model : DEFAULT_CHAT_MODEL;
+  const safeMaxTokens = Math.min(Math.max(1, Number(max_tokens) || 1000), MAX_OUTPUT_TOKENS);
+
   // `system` may be a plain string OR an array of content blocks. When the
   // frontend sends the full paper as its own block tagged with
   // cache_control: { type: 'ephemeral' }, Anthropic caches it so repeat
   // questions on the same paper bill cached input (~10% of normal). We pass
   // whatever structure we're given straight through.
+  const payload = JSON.stringify({ model: safeModel, max_tokens: safeMaxTokens, system, messages });
+  if (payload.length > MAX_REQUEST_CHARS) {
+    return { status: 413, json: { error: 'Request too large.' } };
+  }
+
+  // Global daily ceiling: check + increment before spending on the model call.
+  if (await overGlobalCeiling()) {
+    return { status: 429, json: { error: 'Daily request limit reached. Please try again later.' } };
+  }
+
   try {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -28,12 +85,7 @@ async function callAnthropic(body) {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model:      model      || DEFAULT_CHAT_MODEL,
-        max_tokens: max_tokens || 1000,
-        system,
-        messages,
-      }),
+      body: payload,
     });
 
     const data = await r.json();
@@ -857,15 +909,111 @@ async function handleChatRequest(body) {
   return callAnthropic(body);
 }
 
+// ── SSRF guard ──────────────────────────────────────────────────────────────
+// The fetch proxies take a caller-supplied URL, so they must never be usable to
+// reach loopback, link-local (incl. the cloud metadata endpoint 169.254.169.254),
+// or private networks. Node's WHATWG URL parser normalizes IPv4 in decimal/hex/
+// octal forms to dotted-decimal, so we validate the normalized host; for real
+// hostnames we also check the addresses they resolve to (a name can point at an
+// internal IP). Redirects are followed manually and each hop is re-validated so
+// a public URL can't 30x into an internal one.
+
+const dnsPromises = require('dns').promises;
+let dnsLookup = (host) => dnsPromises.lookup(host, { all: true });
+// Test seam: inject a fake resolver so URL-guard tests stay hermetic (no network).
+function _setDnsLookup(fn) { dnsLookup = fn; }
+
+function ipv4Octets(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return null;
+  const o = [m[1], m[2], m[3], m[4]].map(Number);
+  return o.every((n) => n >= 0 && n <= 255) ? o : null;
+}
+
+function isPrivateIPv4(o) {
+  const [a, b] = o;
+  if (a === 0 || a === 10 || a === 127) return true;   // this-net, private, loopback
+  if (a === 169 && b === 254) return true;             // link-local (cloud metadata)
+  if (a === 172 && b >= 16 && b <= 31) return true;    // private
+  if (a === 192 && b === 168) return true;             // private
+  if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT 100.64/10
+  if (a >= 224) return true;                           // multicast + reserved
+  return false;
+}
+
+function isPrivateIPv6(host) {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === '::1' || h === '::') return true;          // loopback / unspecified
+  if (/^f[cd]/.test(h)) return true;                   // unique-local fc00::/7
+  if (/^fe[89ab]/.test(h)) return true;                // link-local fe80::/10
+  let m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h);     // IPv4-mapped, dotted
+  if (m) { const o = ipv4Octets(m[1]); return o ? isPrivateIPv4(o) : true; }
+  m = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h); // IPv4-mapped, hextet
+  if (m) {
+    const hi = parseInt(m[1], 16), lo = parseInt(m[2], 16);
+    return isPrivateIPv4([hi >> 8, hi & 255, lo >> 8, lo & 255]);
+  }
+  return false;
+}
+
+function isPrivateAddress(addr) {
+  const host = String(addr || '').replace(/^\[|\]$/g, '');
+  const o = ipv4Octets(host);
+  if (o) return isPrivateIPv4(o);
+  if (host.includes(':')) return isPrivateIPv6(host);
+  return true; // unrecognized numeric form → treat as unsafe
+}
+
+function isBlockedHostname(host) {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  return h === 'localhost' || h.endsWith('.localhost')
+      || h.endsWith('.local') || h.endsWith('.internal');
+}
+
+function isIpLiteral(host) {
+  const h = host.replace(/^\[|\]$/g, '');
+  return !!ipv4Octets(h) || h.includes(':');
+}
+
+// Synchronous structural check (no DNS): protocol, blocked names, private IP
+// literals. Real hostnames pass here and get the DNS check in assertUrlPublic.
 function isFetchUrlAllowed(rawUrl) {
   let u;
   try { u = new URL(rawUrl); } catch { return false; }
   if (!['http:', 'https:'].includes(u.protocol)) return false;
   const host = u.hostname.toLowerCase();
-  if (host === 'localhost' || host.endsWith('.local')) return false;
-  if (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return false;
-  if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|169\.254\.)/.test(host)) return false;
+  if (isBlockedHostname(host)) return false;
+  if (isIpLiteral(host)) return !isPrivateAddress(host);
   return true;
+}
+
+// Full async check run on every fetch hop: structural + DNS resolution, so a
+// hostname pointing at an internal address is caught too.
+async function assertUrlPublic(rawUrl) {
+  if (!isFetchUrlAllowed(rawUrl)) { const e = new Error('Blocked or invalid URL'); e.ssrf = true; throw e; }
+  const host = new URL(rawUrl).hostname.toLowerCase();
+  if (isIpLiteral(host)) return;
+  let addrs;
+  try { addrs = await dnsLookup(host.replace(/^\[|\]$/g, '')); }
+  catch { const e = new Error('DNS resolution failed'); e.ssrf = true; throw e; }
+  for (const a of (addrs || [])) {
+    if (isPrivateAddress(a.address)) { const e = new Error('URL resolves to a private address'); e.ssrf = true; throw e; }
+  }
+}
+
+// fetch() that follows redirects manually, re-validating each hop so a public
+// URL cannot redirect into an internal one.
+async function safeFetch(rawUrl, opts = {}, maxRedirects = 4) {
+  let current = rawUrl;
+  for (let hop = 0; ; hop++) {
+    await assertUrlPublic(current);
+    const r = await fetch(current, { ...opts, redirect: 'manual' });
+    const redirecting = r.status >= 300 && r.status < 400;
+    const loc = redirecting && r.headers ? (r.headers.get('location') || r.headers.get('Location')) : null;
+    if (!loc) return r;
+    if (hop >= maxRedirects) { const e = new Error('Too many redirects'); e.ssrf = true; throw e; }
+    current = new URL(loc, current).toString();
+  }
 }
 
 async function handleFetchRequest(rawUrl) {
@@ -875,12 +1023,11 @@ async function handleFetchRequest(rawUrl) {
   }
 
   try {
-    const r = await fetch(url, {
+    const r = await safeFetch(url, {
       headers: {
         'User-Agent': 'PaperReader/1.0 (research tool)',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
-      redirect: 'follow',
       signal: AbortSignal.timeout(25000),
     });
     if (!r.ok) {
@@ -903,12 +1050,11 @@ async function handleFetchPdfRequest(rawUrl) {
   }
 
   try {
-    const r = await fetch(url, {
+    const r = await safeFetch(url, {
       headers: {
         'User-Agent': 'PaperReader/1.0 (research tool)',
         'Accept': 'application/pdf,*/*',
       },
-      redirect: 'follow',
       signal: AbortSignal.timeout(60000),
     });
     if (!r.ok) {
@@ -940,12 +1086,11 @@ async function handleFetchImageRequest(rawUrl) {
   }
 
   try {
-    const r = await fetch(url, {
+    const r = await safeFetch(url, {
       headers: {
         'User-Agent': 'PaperReader/1.0 (research tool)',
         'Accept': 'image/*,*/*',
       },
-      redirect: 'follow',
       signal: AbortSignal.timeout(30000),
     });
     if (!r.ok) {
@@ -984,4 +1129,10 @@ module.exports = {
   handleFetchRequest,
   handleFetchPdfRequest,
   handleFetchImageRequest,
+  // SSRF guard internals (exported for tests).
+  isFetchUrlAllowed,
+  isPrivateAddress,
+  assertUrlPublic,
+  safeFetch,
+  _setDnsLookup,
 };

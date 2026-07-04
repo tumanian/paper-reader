@@ -27,7 +27,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 // App modules in browser load order. The browser resolves the graph via
 // `import`; the vm shares one scope, so order only needs to satisfy top-level
 // (non-hoisted) execution — function declarations hoist across the bundle.
-const APP_MODULES = ['js/util.js', 'js/state.js', 'js/persistence.js', 'js/library.js', 'js/pdf.js', 'js/citation-parse.js', 'js/web-loader.js', 'js/citation-resolve.js', 'js/selection.js', 'js/figure.js', 'js/chat.js', 'js/onboarding.js', 'js/main.js'];
+const APP_MODULES = ['js/util.js', 'js/state.js', 'js/persistence.js', 'js/library.js', 'js/pdf.js', 'js/citation-parse.js', 'js/sanitize.js', 'js/web-loader.js', 'js/citation-resolve.js', 'js/selection.js', 'js/figure.js', 'js/chat.js', 'js/onboarding.js', 'js/main.js'];
 
 // Strip ES-module syntax so the files can be concatenated into one vm script
 // sharing a single scope (function declarations hoist; cross-file references

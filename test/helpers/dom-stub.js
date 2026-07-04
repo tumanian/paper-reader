@@ -246,7 +246,7 @@ function makeFakeSupabase() {
   };
 
   function chain(table) {
-    const q = { table, op: 'select', filters: [], rows: null };
+    const q = { table, op: 'select', filters: [], rows: null, options: null };
     const result = () => {
       state.calls.queries.push(q);
       const data = q.op === 'select' ? (state.selectResults[table] || []) : null;
@@ -255,7 +255,7 @@ function makeFakeSupabase() {
     const c = {
       select() { q.op = 'select'; return c; },
       insert(rows) { q.op = 'insert'; q.rows = rows; return c; },
-      upsert(rows) { q.op = 'upsert'; q.rows = rows; return c; },
+      upsert(rows, options) { q.op = 'upsert'; q.rows = rows; q.options = options || null; return c; },
       delete() { q.op = 'delete'; return c; },
       eq(col, val) { q.filters.push([col, val]); return c; },
       order() { return c; },

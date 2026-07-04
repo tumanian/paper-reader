@@ -2,6 +2,7 @@
 // extraction. Depends on the pure citation core for reference resolution.
 
 import { esc, decodeXmlText, resolveMediaUrl, normalizeForMatch } from './util.js';
+import { sanitizeHtml } from './sanitize.js';
 import {
   docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions, currentMode,
   MAX_PAPER_CHARS,
@@ -282,9 +283,12 @@ export function renderWebArticle(title, html, url) {
   // layer is shared across web docs, so stale rects would otherwise bleed in.
   const hlLayer = document.querySelector('#article-wrapper > .highlights-layer');
   if (hlLayer) hlLayer.innerHTML = '';
-  document.getElementById('article-body').innerHTML = html;
+  // `html` is remote, attacker-controllable content (fetched from an arbitrary
+  // URL). Sanitize before it touches the DOM — setting innerHTML fires inline
+  // event handlers like <img onerror>, so stripping <script> after the fact is
+  // not enough. See js/sanitize.js.
+  document.getElementById('article-body').innerHTML = sanitizeHtml(html);
   document.getElementById('paper-name').textContent = title || url;
-  document.querySelectorAll('#article-body script').forEach(s => s.remove());
   // Resolve relative figure/media URLs against the source page so images load
   // and figure capture can fetch them (root-relative /html/... paths otherwise
   // resolve to localhost and break cross-origin rasterization).

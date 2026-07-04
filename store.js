@@ -30,10 +30,10 @@ window.PaperStore = (function () {
       return 'Database tables missing — run supabase/schema.sql (or migrate-to-email.sql).';
     }
     if (code === '42703' && msg.includes('owner_email')) {
-      return 'Database needs migration — run supabase/migrate-to-email.sql in Supabase SQL Editor.';
+      return 'Database needs migration — run supabase/schema.sql in Supabase SQL Editor.';
     }
     if (code === '42501' || msg.toLowerCase().includes('row-level security')) {
-      return 'Database permission error — run supabase/migrate-to-email.sql for open RLS policies.';
+      return 'Database permission error — sign in, and ensure supabase/harden-rls.sql and supabase/multi-tenant-keys.sql have been applied in the SQL Editor.';
     }
     return msg;
   }
@@ -330,13 +330,21 @@ window.PaperStore = (function () {
   }
 
   async function saveDocToCloudInner(doc) {
-    const { error: docErr } = await supabase.from('documents').upsert(docToRow(doc));
+    // Composite primary key (owner_email, id): rows are unique per user, so two
+    // accounts can hold the same content-addressed paper without colliding.
+    // upsert must resolve conflicts on BOTH key columns.
+    const { error: docErr } = await supabase
+      .from('documents')
+      .upsert(docToRow(doc), { onConflict: 'owner_email,id' });
     if (docErr) throw docErr;
 
-    // Delete all discussions for this doc (including legacy rows with null owner_email).
+    // Delete this user's discussions for the doc, then re-insert. Scoped by
+    // owner_email as well as document_id so it can never touch another account's
+    // rows for the same shared document id (RLS enforces this too).
     const { error: delErr } = await supabase
       .from('discussions')
       .delete()
+      .eq('owner_email', userId)
       .eq('document_id', doc.id);
     if (delErr) throw delErr;
 
@@ -352,7 +360,7 @@ window.PaperStore = (function () {
         rel_rects: d.relRects || [],
         citation_meta: d.citationMeta || null,
         math: d.mathKind ? { kind: d.mathKind, tex: d.mathTex || null } : null,
-      });
+      }, { onConflict: 'owner_email,id' });
       if (discErr) throw discErr;
 
       const messages = (d.messages || []).map((m, i) => ({
@@ -428,7 +436,7 @@ window.PaperStore = (function () {
   async function saveRating(rec) {
     if (!useCloud || !userId) return;
     try {
-      const { error } = await supabase.from('ratings').upsert(ratingToRow(rec));
+      const { error } = await supabase.from('ratings').upsert(ratingToRow(rec), { onConflict: 'owner_email,id' });
       if (error) throw error;
       setSyncError(null);
     } catch (e) { setSyncError(e); throw e; }
@@ -463,7 +471,7 @@ window.PaperStore = (function () {
       source_doc: item.sourceDoc || null,
       ref_text: item.refText || null,
       added_at: new Date(item.addedAt || Date.now()).toISOString(),
-    });
+    }, { onConflict: 'owner_email,id' });
     if (error) throw error;
   }
 
@@ -550,7 +558,10 @@ window.PaperStore = (function () {
   }
 
   async function deleteDocFromCloud(docId) {
-    const { error } = await supabase.from('documents').delete().eq('id', docId);
+    // Scope by owner as well as id: the id is shared across users (composite PK),
+    // so an id-only delete could target another account's row (RLS blocks it,
+    // but being explicit avoids relying on that alone).
+    const { error } = await supabase.from('documents').delete().eq('owner_email', userId).eq('id', docId);
     if (error) throw error;
     try {
       await supabase.storage.from('pdfs').remove([`${userPathKey(userId)}/${docId}`]);
