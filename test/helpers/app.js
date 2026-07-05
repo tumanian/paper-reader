@@ -72,6 +72,7 @@ const SHIM = `
       buildPaperReferences, parseReferencesFromSection, parseAuthorYearReferenceLines, mergeWrappedRefLines, expandSelectionText,
       initStorage, loadStore, persistCurrentDoc,
       sendMessage, callClaude, buildRatingRecord, ratingIdFor,
+      renderList, deleteDiscussion, syncMessagesFromCloud, startMessagePoll, stopMessagePoll,
     },
     state: {
       paperText: acc(function(){return paperText;}, function(v){paperText=v;}),

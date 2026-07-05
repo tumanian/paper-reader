@@ -7,7 +7,7 @@ import { initWebLoader, setWebLoaderHooks, loadWebPage, loadArxivPdf, startApp, 
 import { setCitationResolveHooks, logCitation, ensureCitationFormat } from './citation-resolve.js';
 import { initSelection, setSelectionHooks, updateReturnButton, finishCitationNavigation, repositionPopover } from './selection.js';
 import { initFigure, setFigureHooks } from './figure.js';
-import { initChat, setChatHooks, paintHighlight, renderList, openChat, sendMessage, showList, findNearbyContext, setSidebarCollapsed } from './chat.js';
+import { initChat, setChatHooks, paintHighlight, renderList, openChat, sendMessage, showList, findNearbyContext, setSidebarCollapsed, stopMessagePoll } from './chat.js';
 import { runOnboardingDemo, cancelOnboardingPlacement, maybeApplyOnboardingCuration, getFeaturedPaper, openFeaturedExample, loadOnboardingData, loadOnboardingActionCache } from './onboarding.js';
 
 // Initialize Vercel Web Analytics — only in browser, not in tests
@@ -38,6 +38,7 @@ document.getElementById('new-btn').addEventListener('click', async () => {
 function backToUpload() {
   cancelOnboardingPlacement();
   persistCurrentDoc();
+  stopMessagePoll();
   clearScheduledSummaryUpdate();
   setPdfDoc(null); clearDiscussions(); setActiveId(null); setPendingSel(null);
   setCurrentDocId(null); setCurrentMode(null);

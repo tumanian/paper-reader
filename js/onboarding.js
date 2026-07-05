@@ -38,7 +38,8 @@ export function runOnboardingDemo(d) {
     d.mathTex = d.tex || d.mathTex || null;
     const cached = getOnboardingChatCache(activeOnboardingPaperId, d.feature);
     if (cached) {
-      playOnboardingCachedChat(d, cached.user, cached.assistant);
+      playOnboardingCachedChat(d, cached.user, cached.assistant)
+        .catch((e) => console.warn('playOnboardingCachedChat failed:', e));
       return true;
     }
     openChat(d.id);
@@ -325,7 +326,7 @@ function applyOnboardingItems(items) {
           }
         }
         const d = {
-          id: Date.now() + discussions.length + Math.floor(Math.random() * 1000),
+          id: PaperStore.newId(),
           txt: normalizeForMatch(range.toString()),
           mode: 'web', pageNum: null, color: nextColor(), wrapper: aw,
           relRects, messages: [],

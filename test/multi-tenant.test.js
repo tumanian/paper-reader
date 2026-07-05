@@ -88,17 +88,21 @@ test('discussions upsert carries owner_email + document_id and the composite con
   assert.equal(discUpsert.options?.onConflict, 'owner_email,id');
 });
 
-test('messages insert carries owner_email and the parent discussion id', async () => {
+test('messages are UPSERTED by content-addressed id (not insert-after-delete)', async () => {
   await signedInAs(USER_A);
   await PaperStore.saveDoc(docWithThread());
 
-  const msgInsert = q().find((x) => x.table === 'messages' && x.op === 'insert');
-  assert.ok(msgInsert, 'a messages insert was issued');
-  assert.ok(Array.isArray(msgInsert.rows) && msgInsert.rows.length === 2);
-  for (const m of msgInsert.rows) {
+  const [msgUpsert] = q().filter((x) => x.table === 'messages' && x.op === 'upsert');
+  assert.ok(msgUpsert, 'a messages upsert was issued');
+  assert.equal(msgUpsert.options?.onConflict, 'owner_email,id', 'idempotent on the composite key');
+  assert.ok(Array.isArray(msgUpsert.rows) && msgUpsert.rows.length === 2);
+  for (const m of msgUpsert.rows) {
     assert.equal(m.owner_email, USER_A.id);
     assert.equal(m.discussion_id, 42);
+    assert.equal(m.id, await PaperStore.messageClientId(42, m.role, m.content), 'id is content-addressed');
   }
+  assert.ok(!q().some((x) => x.table === 'messages' && x.op === 'insert'),
+    'no bare insert — that was the destructive delete-then-reinsert path');
 });
 
 test('read_later and ratings upserts use the composite conflict target', async () => {
@@ -118,18 +122,27 @@ test('read_later and ratings upserts use the composite conflict target', async (
 
 // ── owner-scoped deletes (never id-only) ───────────────────────────────────
 
-test('saveDoc clears prior discussions scoped by BOTH owner_email and document_id', async () => {
+test('saveDoc never issues a discussions delete — a stale save cannot wipe a peer\'s rows', async () => {
   await signedInAs(USER_A);
   await PaperStore.saveDoc(docWithThread());
 
-  const del = q().find((x) => x.table === 'discussions' && x.op === 'delete');
-  assert.ok(del, 'a discussions delete was issued');
-  const cols = del.filters.map((f) => f[0]);
-  assert.ok(cols.includes('owner_email'), 'delete is scoped by owner_email');
-  assert.ok(cols.includes('document_id'), 'delete is scoped by document_id');
-  assert.deepEqual(
-    del.filters.find((f) => f[0] === 'owner_email'), ['owner_email', USER_A.id],
-  );
+  assert.ok(!q().some((x) => x.table === 'discussions' && x.op === 'delete'),
+    'saveDoc must never delete discussions — that was the destructive blob-replace bug');
+  const [discUpsert] = upsertsFor('discussions');
+  assert.ok(discUpsert, 'discussions are upserted instead');
+  assert.equal(discUpsert.rows.owner_email, USER_A.id);
+});
+
+test('deleting a discussion is a monotonic tombstone (UPDATE deleted=true), scoped by owner_email + id', async () => {
+  await signedInAs(USER_A);
+  await PaperStore.deleteDiscussion(42);
+
+  const upd = q().find((x) => x.table === 'discussions' && x.op === 'update');
+  assert.ok(upd, 'a discussions update was issued');
+  assert.equal(upd.rows.deleted, true);
+  const cols = upd.filters.map((f) => f[0]);
+  assert.ok(cols.includes('owner_email') && cols.includes('id'), 'scoped by owner_email + id');
+  assert.deepEqual(upd.filters.find((f) => f[0] === 'id'), ['id', 42]);
 });
 
 test('deleteDoc deletes the documents row scoped by owner_email + id, not id alone', async () => {

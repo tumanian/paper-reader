@@ -256,8 +256,10 @@ function makeFakeSupabase() {
       select() { q.op = 'select'; return c; },
       insert(rows) { q.op = 'insert'; q.rows = rows; return c; },
       upsert(rows, options) { q.op = 'upsert'; q.rows = rows; q.options = options || null; return c; },
+      update(rows) { q.op = 'update'; q.rows = rows; return c; },
       delete() { q.op = 'delete'; return c; },
       eq(col, val) { q.filters.push([col, val]); return c; },
+      in(col, vals) { q.filters.push([col, vals]); return c; },
       order() { return c; },
       then(res, rej) { return Promise.resolve(result()).then(res, rej); },
     };
