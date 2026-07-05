@@ -10,10 +10,14 @@ import { initFigure, setFigureHooks } from './figure.js';
 import { initChat, setChatHooks, paintHighlight, renderList, openChat, sendMessage, showList, findNearbyContext, setSidebarCollapsed, stopMessagePoll } from './chat.js';
 import { runOnboardingDemo, cancelOnboardingPlacement, maybeApplyOnboardingCuration, getFeaturedPaper, openFeaturedExample, loadOnboardingData, loadOnboardingActionCache } from './onboarding.js';
 
-// Initialize Vercel Web Analytics — only in browser, not in tests
+// Initialize Vercel Web Analytics per the "Other" framework quickstart
+// (https://vercel.com/docs/analytics/quickstart?framework=other): import the
+// module and call inject() once, client-side only. This is a zero-build static
+// site, so the module is loaded from a CDN (like pdf.js / Readability / DOMPurify)
+// rather than a bare specifier that would need a bundler or node_modules.
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-  import('@vercel/analytics').then(analytics => {
-    analytics.inject();
+  import('https://cdn.jsdelivr.net/npm/@vercel/analytics@2.0.1/dist/index.mjs').then(({ inject }) => {
+    inject();
   }).catch(() => {
     // Analytics module not available (e.g., in test environment)
   });
