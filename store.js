@@ -77,6 +77,98 @@ window.PaperStore = (function () {
     return String(uid).replace(/[^a-zA-Z0-9]/g, '').slice(0, 48);
   }
 
+  // ── Entity identity + merge (cross-device sync) ─────────────────────────────
+  // History used to be lost because messages had no stable identity and sync did
+  // a blob-level last-write-wins. Now: discussions get random UUIDs, messages get
+  // content-addressed ids, and sync is a pure merge-by-id (a CRDT-style union).
+
+  // Random opaque id for entities created locally (discussions, etc.). Two devices
+  // can never mint the same one, so concurrent creates don't collide.
+  function newId() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    // Fallback (older engines): RFC-4122-shaped from random bytes.
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+      const r = (Math.random() * 16) | 0;
+      return (ch === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+
+  // Content-addressed message id, built from a STANDARD hash (Web Crypto
+  // SHA-256 — no custom/hand-rolled hash code, and no cross-language bit-exact
+  // risk: it hashes the UTF-8 byte encoding, which is unambiguous, and Postgres
+  // has the matching standard hash built in (sha256()/digest()) for the
+  // migration backfill — see supabase/message-sync.sql. The SAME logical
+  // message maps to the SAME id on every device, so cloud writes are idempotent
+  // upserts (no delete-replace) and a stale device can never clobber a peer's
+  // newer message. Position is NOT in the id (devices can't agree on an index)
+  // — content + role is. Accepted edge: two identical role+content messages in
+  // one thread collapse to one id. Truncated to 16 hex chars (64 bits) — ample
+  // collision resistance for this use, keeps ids compact.
+  //
+  // Necessarily ASYNC (crypto.subtle.digest has no synchronous form in
+  // browsers) — called once, at message-creation time, by the frontend. Once a
+  // message carries `.id`, nothing downstream (merge, save, load) recomputes it.
+  async function messageClientId(discussionId, role, content) {
+    const r = role === 'assistant' ? 'assistant' : 'user';
+    const bytes = new TextEncoder().encode(content || '');
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    return `${discussionId}:${r}:${hex.slice(0, 16)}`;
+  }
+
+  // Pure (synchronous), merge-by-id for one discussion's messages: set-union
+  // keyed by id, ordered by createdMs (then id) so the result is deterministic
+  // → the merge is idempotent, commutative, and associative. Every message
+  // reaching this point is expected to already carry `.id` (stamped at creation
+  // — see messageClientId); a message without one is a caller bug, guarded here
+  // defensively rather than silently computing a mismatched id inline (this
+  // function must stay synchronous for the merge algebra to stay pure/testable).
+  function mergeMessages(aMsgs, bMsgs) {
+    const byId = new Map();
+    for (const m of [...(aMsgs || []), ...(bMsgs || [])]) {
+      if (!m) continue;
+      const id = m.id || newId();
+      if (!m.id) console.warn('mergeMessages: message missing .id — this should never happen; check the creation path.');
+      if (!byId.has(id)) byId.set(id, { ...m, id });
+    }
+    return [...byId.values()].sort((x, y) =>
+      (x.createdMs || 0) - (y.createdMs || 0) || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+  }
+
+  // Pure merge-by-id for discussions. `deleted` is monotonic (a tombstone on
+  // either side wins and can never be un-set); scalar fields take the newer copy
+  // by `updated` with an id tiebreak (kept deterministic for commutativity).
+  function mergeDiscussions(aDiscs, bDiscs) {
+    const ids = [];
+    const a = new Map(), b = new Map();
+    for (const d of aDiscs || []) { if (d && d.id != null) { if (!a.has(d.id)) ids.push(d.id); a.set(d.id, d); } }
+    for (const d of bDiscs || []) { if (d && d.id != null) { if (!a.has(d.id) && !b.has(d.id)) ids.push(d.id); b.set(d.id, d); } }
+    const out = ids.map((id) => {
+      const da = a.get(id), db = b.get(id);
+      const base = !db ? da : !da ? db : ((db.updated || 0) > (da.updated || 0) ? db : da);
+      return {
+        ...base,
+        id,
+        deleted: !!((da && da.deleted) || (db && db.deleted)),
+        messages: mergeMessages(da && da.messages, db && db.messages),
+      };
+    });
+    out.sort((x, y) => (String(x.id) < String(y.id) ? -1 : String(x.id) > String(y.id) ? 1 : 0));
+    return out;
+  }
+
+  // Merge two versions of one document's conversation. Doc-scalar fields take the
+  // newer by `updated`; the loss-prone part (discussions + messages) is merged by
+  // id. Pure — no I/O, no clock reads.
+  function mergeConversation(aDoc, bDoc) {
+    const a = aDoc || {}, b = bDoc || {};
+    const base = (b.updated || 0) > (a.updated || 0) ? b : a;
+    return {
+      ...base,
+      discussions: mergeDiscussions(a.discussions, b.discussions),
+    };
+  }
+
   // ── Legacy (email-era) data drop ────────────────────────────────────────
   // The old email-keyed model stored GLOBAL keys. That content is disposable
   // (per the auth migration decision: drop and rebuild, no migration). Runs
@@ -253,7 +345,7 @@ window.PaperStore = (function () {
     const [docRes, discRes, msgRes, rlRes] = await Promise.all([
       supabase.from('documents').select('*').eq('owner_email', userId).order('updated_at', { ascending: false }),
       supabase.from('discussions').select('*').eq('owner_email', userId),
-      supabase.from('messages').select('*').eq('owner_email', userId).order('sort_order', { ascending: true }),
+      supabase.from('messages').select('*').eq('owner_email', userId).order('created_ms', { ascending: true }),
       supabase.from('read_later').select('*').eq('owner_email', userId).order('added_at', { ascending: false }),
     ]);
     if (docRes.error) throw docRes.error;
@@ -270,14 +362,17 @@ window.PaperStore = (function () {
     for (const m of msgRows || []) {
       if (!msgsByDisc[m.discussion_id]) msgsByDisc[m.discussion_id] = [];
       msgsByDisc[m.discussion_id].push({
+        id: m.id,
         role: m.role,
         content: m.content,
         ...(m.hidden ? { hidden: true } : {}),
+        createdMs: m.created_ms || 0,
       });
     }
 
     const discsByDoc = {};
     for (const d of discRows || []) {
+      if (d.deleted) continue; // tombstoned → don't surface it
       if (!discsByDoc[d.document_id]) discsByDoc[d.document_id] = [];
       discsByDoc[d.document_id].push({
         id: d.id,
@@ -330,25 +425,23 @@ window.PaperStore = (function () {
   }
 
   async function saveDocToCloudInner(doc) {
-    // Composite primary key (owner_email, id): rows are unique per user, so two
-    // accounts can hold the same content-addressed paper without colliding.
-    // upsert must resolve conflicts on BOTH key columns.
+    // Idempotent, non-destructive save. Everything is upserted by a stable id and
+    // NOTHING is deleted here — a stale device can only re-assert old rows, never
+    // wipe a peer's newer message (that was the history-loss bug). Deletions are
+    // separate, monotonic tombstones (see deleteDiscussion). Composite PK
+    // (owner_email, id) keeps rows unique per user.
     const { error: docErr } = await supabase
       .from('documents')
       .upsert(docToRow(doc), { onConflict: 'owner_email,id' });
     if (docErr) throw docErr;
 
-    // Delete this user's discussions for the doc, then re-insert. Scoped by
-    // owner_email as well as document_id so it can never touch another account's
-    // rows for the same shared document id (RLS enforces this too).
-    const { error: delErr } = await supabase
-      .from('discussions')
-      .delete()
-      .eq('owner_email', userId)
-      .eq('document_id', doc.id);
-    if (delErr) throw delErr;
-
     for (const d of doc.discussions || []) {
+      // Don't re-assert a locally-tombstoned discussion (would race a peer's
+      // delete). Its tombstone lives in the cloud already.
+      if (d.deleted) continue;
+
+      // Upsert WITHOUT the `deleted` column so an existing tombstone is preserved
+      // (PostgREST only updates columns present in the payload).
       const { error: discErr } = await supabase.from('discussions').upsert({
         id: d.id,
         document_id: doc.id,
@@ -363,20 +456,89 @@ window.PaperStore = (function () {
       }, { onConflict: 'owner_email,id' });
       if (discErr) throw discErr;
 
-      const messages = (d.messages || []).map((m, i) => ({
+      // `.id` is stamped once at message-creation time by the frontend (see
+      // messageClientId) — trust it here. The computed fallback is defensive
+      // only (should never trigger); messageClientId is async (Web Crypto has
+      // no sync digest), hence Promise.all instead of a plain .map.
+      const messages = await Promise.all((d.messages || []).map(async (m, i) => ({
+        id: m.id || await messageClientId(d.id, m.role, m.content),
         discussion_id: d.id,
         owner_email: userId,
         role: m.role === 'assistant' ? 'assistant' : 'user',
         content: m.content || '',
         hidden: !!m.hidden,
         sort_order: i,
-      }));
+        created_ms: m.createdMs ?? null,
+      })));
 
       if (messages.length) {
-        const { error: msgErr } = await supabase.from('messages').insert(messages);
+        const { error: msgErr } = await supabase
+          .from('messages')
+          .upsert(messages, { onConflict: 'owner_email,id' });
         if (msgErr) throw msgErr;
       }
     }
+  }
+
+  // Monotonic tombstone — deleting a highlight sets discussions.deleted=true so the
+  // deletion propagates to other devices on their next poll and can't be
+  // resurrected by a stale save (which skips deleted discussions).
+  async function deleteDiscussionFromCloud(discId) {
+    const { error } = await supabase
+      .from('discussions')
+      .update({ deleted: true })
+      .eq('owner_email', userId)
+      .eq('id', discId);
+    if (error) throw error;
+  }
+
+  async function deleteDiscussion(discId) {
+    if (!useCloud || !userId) return;
+    try { await deleteDiscussionFromCloud(discId); setSyncError(null); }
+    catch (e) { setSyncError(e); throw e; }
+  }
+
+  // Poll payload for one open document: FULL discussion rows (so the frontend
+  // can materialize a discussion created on another device, not just merge
+  // messages into ones it already knows) + all their messages (content-
+  // addressed ids), for the frontend's additive merge.
+  async function getDocConversation(docId) {
+    if (!useCloud || !userId || !supabase) return { discussions: [], messagesByDisc: {} };
+    const { data: discRows, error: de } = await supabase
+      .from('discussions').select('*').eq('owner_email', userId).eq('document_id', docId);
+    if (de) throw de;
+    const ids = (discRows || []).map((d) => d.id);
+    let msgRows = [];
+    if (ids.length) {
+      const { data, error: me } = await supabase
+        .from('messages').select('id, discussion_id, role, content, hidden, created_ms')
+        .eq('owner_email', userId).in('discussion_id', ids).order('created_ms', { ascending: true });
+      if (me) throw me;
+      msgRows = data || [];
+    }
+    const messagesByDisc = {};
+    for (const m of msgRows) {
+      (messagesByDisc[m.discussion_id] = messagesByDisc[m.discussion_id] || []).push({
+        id: m.id, role: m.role, content: m.content,
+        ...(m.hidden ? { hidden: true } : {}), createdMs: m.created_ms || 0,
+      });
+    }
+    return {
+      // Same shape restoreDiscussions expects (wrapper stays null until painted).
+      discussions: (discRows || []).map((d) => ({
+        id: d.id,
+        deleted: !!d.deleted,
+        txt: d.txt,
+        mode: d.mode,
+        pageNum: d.page_num,
+        color: d.color,
+        relRects: d.rel_rects || [],
+        citationMeta: d.citation_meta || null,
+        mathKind: d.math?.kind || null,
+        mathTex: d.math?.tex || null,
+      })),
+      messagesByDisc,
+    };
   }
 
   function ratingToRow(rec) {
@@ -1019,6 +1181,8 @@ window.PaperStore = (function () {
     getSyncStatus,
     saveDoc,
     deleteDoc,
+    deleteDiscussion,
+    getDocConversation,
     clearLibrary,
     addReadLater,
     removeReadLater,
@@ -1033,11 +1197,18 @@ window.PaperStore = (function () {
     deleteFiguresForDoc,
     syncAllToCloud,
     getClient: () => supabase,
+    // Identity + merge, used by the frontend (poll/create paths) and covered by
+    // the message-sync tests.
+    newId,
+    messageClientId,
+    mergeConversation,
+    mergeMessages,
     // Pure helpers exposed for unit tests (no app behaviour depends on these
     // being public).
     _internals: {
       identityFromSession, storageKeyForUser, userPathKey, legacyKeysToClear, dropLegacyData,
       isUntouchedDemoDoc, migrateLocalDataToAccount,
+      mergeMessages, mergeDiscussions,
     },
   };
 })();

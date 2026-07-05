@@ -7,7 +7,7 @@
 
 import { esc, md } from './util.js';
 import { discussions, activeId, currentDocId, docMeta, paperText, MAX_PAPER_CHARS } from './state.js';
-import { setActiveId, removeDiscussion } from './state.js';
+import { setActiveId, addDiscussion, removeDiscussion } from './state.js';
 import { persistCurrentDoc, scheduleSummaryUpdate } from './persistence.js';
 import { renderChatFigure, ensureFigureImage } from './figure.js';
 import { repaintWebHighlights } from './web-loader.js';
@@ -45,6 +45,10 @@ export function paintHighlight(d) {
 //  DISCUSSION LIST
 // ═══════════════════════════════════════════════════════
 export function renderList() {
+  // renderList runs at doc-open (every loader) and after most discussion
+  // mutations, so it's the natural, idempotent place to (re)start the poll for
+  // the currently-open doc. startMessagePoll no-ops if already polling this id.
+  if (currentDocId) startMessagePoll(currentDocId);
   const panel = document.getElementById('disc-list-panel');
   document.getElementById('disc-count').textContent = discussions.length;
   panel.innerHTML = '';
@@ -82,7 +86,10 @@ export function renderList() {
   }
 }
 
-export function deleteDiscussion(id) {
+// DOM + local-state cleanup only — no cloud call. Shared by the user-initiated
+// delete (below) and a tombstone arriving from ANOTHER device via the message
+// poll (which must remove the discussion locally WITHOUT re-issuing a delete).
+function removeDiscussionLocal(id) {
   const d = discussions.find(x => x.id === id);
   if (d && d.wrapper) {
     // remove painted rects for this highlight (repaint all to be safe)
@@ -94,8 +101,135 @@ export function deleteDiscussion(id) {
   const wraps = new Set(discussions.map(x => x.wrapper).filter(Boolean));
   wraps.forEach(w => { const l = w.querySelector('.highlights-layer'); if (l) l.innerHTML=''; });
   discussions.forEach(x => { if (x.wrapper) paintHighlight(x); });
-  persistCurrentDoc();
   if (activeId === id) showList(); else renderList();
+}
+
+export function deleteDiscussion(id) {
+  removeDiscussionLocal(id);
+  persistCurrentDoc();
+  // Cloud saves no longer delete-then-reinsert (that was the history-loss bug),
+  // so a discussion delete must be its own explicit, monotonic tombstone —
+  // otherwise the row would simply linger in the cloud forever. No-ops locally /
+  // offline (PaperStore.deleteDiscussion checks useCloud).
+  PaperStore.deleteDiscussion(id).catch((e) => console.warn('Cloud discussion delete failed:', e));
+}
+
+// ═══════════════════════════════════════════════════════
+//  CROSS-DEVICE MESSAGE SYNC (poll)
+// ═══════════════════════════════════════════════════════
+// Messages and discussions can be created on any device/session. Rather than a
+// push channel, the open document polls the cloud every few seconds and merges
+// additively BY ID into the live state:
+//   * new messages merge into the discussion objects they belong to (never
+//     replacing the object itself — that would drop live DOM refs, color,
+//     rel_rects);
+//   * a discussion this tab has never seen (created on another device/tab) is
+//     materialized, added to the list, and its highlight painted;
+//   * a tombstoned discussion is removed locally (without re-issuing a delete).
+const POLL_INTERVAL_MS = 4000;
+let _pollTimer = null;
+let _pollDocId = null;
+let _pollWaitLogged = false;
+
+// One pull, exposed standalone so it's directly testable without real timers.
+export async function syncMessagesFromCloud(docId) {
+  if (!docId || docId !== currentDocId) {
+    console.debug('[Sync] skip — doc changed (poll for', docId, ', open:', currentDocId, ')');
+    return false;
+  }
+  // Cloud may not be ready yet (auth still initializing at doc-open) — the
+  // poll keeps ticking and picks up as soon as the session lands.
+  if (!PaperStore.isCloud?.()) {
+    if (!_pollWaitLogged) { console.info('[Sync] waiting for cloud session before syncing', docId); _pollWaitLogged = true; }
+    return false;
+  }
+  _pollWaitLogged = false;
+
+  const { discussions: remoteDiscs, messagesByDisc } = await PaperStore.getDocConversation(docId);
+  console.debug('[Sync] tick', docId, '· remote discussions:', remoteDiscs.length,
+    '· remote messages:', Object.values(messagesByDisc).reduce((n, a) => n + a.length, 0),
+    '· local discussions:', discussions.length);
+  const localIds = new Set(discussions.map((d) => String(d.id)));
+  const remoteById = new Map(remoteDiscs.map((r) => [String(r.id), r]));
+  let changed = false;
+
+  // 1. Discussions this tab already knows: merge messages / apply tombstones.
+  for (const d of discussions.slice()) {
+    const remote = remoteById.get(String(d.id));
+    if (!remote) continue; // not yet known to the cloud (e.g. not saved yet)
+    if (remote.deleted) {
+      console.info('[Sync] discussion', d.id, 'tombstoned on another device — removing locally');
+      removeDiscussionLocal(d.id); // a tombstone from another device — no re-delete call
+      changed = true;
+      continue;
+    }
+    const remoteMsgs = messagesByDisc[d.id] || [];
+    const merged = PaperStore.mergeMessages(d.messages, remoteMsgs);
+    if (merged.length !== d.messages.length) {
+      console.info('[Sync] discussion', d.id, '·', merged.length - d.messages.length, 'new message(s) from another device');
+      d.messages = merged;
+      changed = true;
+      if (activeId === d.id) rebuildChat(d);
+    }
+  }
+
+  // 2. Discussions this tab has NEVER seen (created on another device/tab):
+  // materialize them. Same restore shape as reopening the doc; wrapper starts
+  // null and is attached by the paint pass below.
+  for (const remote of remoteDiscs) {
+    if (remote.deleted || localIds.has(String(remote.id))) continue;
+    const d = {
+      ...remote,
+      wrapper: null,
+      messages: PaperStore.mergeMessages([], messagesByDisc[remote.id] || []),
+      relRects: Array.isArray(remote.relRects) ? remote.relRects : [],
+      color: remote.color || { bg: 'rgba(255,215,0,.45)', dot: '#c9a000' },
+    };
+    delete d.deleted;
+    console.info('[Sync] new discussion from another device:', d.id, '·', (d.txt || '').slice(0, 60));
+    addDiscussion(d);
+    changed = true;
+    // Paint its highlight. Web mode repaints the whole layer (also re-anchors
+    // rects); PDF mode attaches the page wrapper directly if that page is
+    // rendered.
+    if (d.mode === 'web') {
+      repaintWebHighlights();
+    } else if (d.mode === 'pdf' && d.pageNum != null) {
+      const wrap = document.querySelector(`.pdf-page-wrapper[data-page="${d.pageNum}"]`);
+      if (wrap) { d.wrapper = wrap; paintHighlight(d); }
+    }
+  }
+
+  if (changed) renderList();
+  return changed;
+}
+
+export function startMessagePoll(docId) {
+  if (_pollDocId === docId && _pollTimer) return; // already polling this doc
+  stopMessagePoll();
+  if (!docId) return;
+  // Deliberately NOT gated on isCloud here: at doc-open the Supabase session
+  // may still be initializing, and renderList might not run again for a while.
+  // The tick itself checks isCloud, so polling starts working the moment the
+  // session is ready (this was a real missed-sync bug, not a hypothetical).
+  _pollDocId = docId;
+  _pollWaitLogged = false;
+  console.info('[Sync] message poll started for', docId, '(every', POLL_INTERVAL_MS / 1000, 's)');
+  const tick = () => syncMessagesFromCloud(docId).catch((e) => console.warn('[Sync] poll failed:', e));
+  // setInterval's FIRST fire is a full interval away — kick one immediate tick
+  // so peers' discussions appear at doc-open, not up to 4s later.
+  tick();
+  _pollTimer = setInterval(tick, POLL_INTERVAL_MS);
+  if (_pollTimer && _pollTimer.unref) _pollTimer.unref();
+}
+
+export function stopMessagePoll() {
+  if (_pollTimer) {
+    clearInterval(_pollTimer);
+    console.info('[Sync] message poll stopped for', _pollDocId);
+  }
+  _pollTimer = null;
+  _pollDocId = null;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -115,11 +249,11 @@ export function openChat(id) {
 }
 
 // Inject a pre-cached user/assistant exchange for onboarding demos (no API round-trip).
-export function playOnboardingCachedChat(d, userText, assistantText) {
+export async function playOnboardingCachedChat(d, userText, assistantText) {
   if (!d || !userText || !assistantText) return false;
   openChat(d.id);
-  d.messages.push({ role: 'user', content: userText });
-  d.messages.push({ role: 'assistant', content: assistantText });
+  d.messages.push({ role: 'user', content: userText, createdMs: Date.now(), id: await PaperStore.messageClientId(d.id, 'user', userText) });
+  d.messages.push({ role: 'assistant', content: assistantText, createdMs: Date.now(), id: await PaperStore.messageClientId(d.id, 'assistant', assistantText) });
   persistCurrentDoc();
   scheduleSummaryUpdate();
   rebuildChat(d);
@@ -410,7 +544,7 @@ export async function sendMessage() {
   const d = discussions.find(x => x.id === activeId); if (!d) return;
 
   input.value=''; input.style.height='auto';
-  d.messages.push({role:'user',content:txt}); addMsg('user',txt);
+  d.messages.push({role:'user',content:txt,createdMs:Date.now(),id:await PaperStore.messageClientId(d.id,'user',txt)}); addMsg('user',txt);
   persistCurrentDoc();
   scheduleSummaryUpdate();
 
@@ -559,7 +693,7 @@ export async function sendMessage() {
       console.log(reply);
       console.groupEnd();
     }
-    d.messages.push({role:'assistant',content:reply});
+    d.messages.push({role:'assistant',content:reply,createdMs:Date.now(),id:await PaperStore.messageClientId(d.id,'assistant',reply)});
     loader.remove();
     const replyDiv = addMsg('assistant',reply);
     renderRatingControl(replyDiv, d, d.messages.length - 1);

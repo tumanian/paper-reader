@@ -108,7 +108,7 @@ export async function finishCitationNavigation(ctx) {
   updateReturnButton();
 
   const d = {
-    id: Date.now(),
+    id: PaperStore.newId(),
     txt: `Citation: ${ctx.citationText}`,
     mode: currentMode,
     pageNum: null,
@@ -263,7 +263,7 @@ function startMathDiscussion(kind) {
   hidePopover();
   window.getSelection()?.removeAllRanges();
 
-  const d = { id:Date.now(), txt:sel.txt, mode:sel.mode,
+  const d = { id:PaperStore.newId(), txt:sel.txt, mode:sel.mode,
                pageNum:sel.pageNum, color:nextColor(), wrapper:sel.wrapper,
                relRects:sel.relRects, messages:[],
                mathKind:kind, mathTex:(sel.math && sel.math.tex) || null,
@@ -386,7 +386,7 @@ export function initSelection() {
     hidePopover();
     window.getSelection()?.removeAllRanges();
 
-    const d = { id:Date.now(), txt:pendingSel.txt, mode:pendingSel.mode,
+    const d = { id:PaperStore.newId(), txt:pendingSel.txt, mode:pendingSel.mode,
                  pageNum:pendingSel.pageNum, color:nextColor(), wrapper:pendingSel.wrapper,
                  relRects:pendingSel.relRects, messages:[],
                  _range: pendingSel.mode === 'web' ? pendingSel.range.cloneRange() : null };
