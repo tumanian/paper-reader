@@ -105,10 +105,16 @@ body {
 .legal-footer a:hover { color: var(--accent); }
 .legal-footer span { margin: 0 7px; opacity: .6; }
 
-/* ── Login widget (top-right) ─────────────────────────── */
+/* ── Login widget (top-left) ─────────────────────────── */
 #login-widget {
-  position: fixed; top: 14px; right: 16px; z-index: 9999;
+  position: fixed; top: 14px; left: 16px; z-index: 9999;
 }
+/* In the reader the widget is docked as the toolbar's first item (see
+   updateAuthBar) so it sits upper-left without floating over other controls. */
+#toolbar #login-widget {
+  position: relative; top: auto; left: auto; right: auto; z-index: 30; flex-shrink: 0;
+}
+#toolbar #login-btn { box-shadow: none; padding: 5px 10px; }
 #login-btn {
   display: flex; align-items: center; gap: 7px; max-width: 240px;
   background: rgba(255,255,255,.92); border: 1px solid #d8d4cc; color: #555;
@@ -120,7 +126,7 @@ body {
 #login-btn .lw-dot { width: 7px; height: 7px; border-radius: 50%; background: #36b37e; flex-shrink: 0; }
 #login-btn .lw-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #login-panel {
-  display: none; position: absolute; top: calc(100% + 8px); right: 0;
+  display: none; position: absolute; top: calc(100% + 8px); left: 0;
   width: 280px; background: white;
   border: 1px solid #e6e3dc; border-radius: 12px; padding: 12px;
   box-shadow: 0 8px 26px rgba(0,0,0,.14); font-size: 12px; color: #666;

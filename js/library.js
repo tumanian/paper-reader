@@ -242,6 +242,18 @@ export function updateAuthBar(info) {
   const avatar = document.getElementById('login-avatar');
   if (!btn) return;
 
+  // Dock the widget into the reader toolbar (leftmost item) when a document is
+  // open so it doesn't float over the toolbar or sidebar controls. On the
+  // upload screen it floats fixed top-left (default CSS).
+  if (loginWidget) {
+    const toolbar = document.getElementById('toolbar');
+    const dockTarget = !isUploadScreenVisible() && toolbar ? toolbar : document.body;
+    if (loginWidget.parentElement !== dockTarget) {
+      if (dockTarget === toolbar) dockTarget.prepend(loginWidget);
+      else dockTarget.appendChild(loginWidget);
+    }
+  }
+
   const identity = info && info.identity ? info.identity : null;
   const signedIn = !!identity;
   const who = identity ? (identity.name || identity.email || 'Signed in') : null;
