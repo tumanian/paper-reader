@@ -1,3 +1,4 @@
+import { chatFetch } from './api.js';
 import { simpleHash } from './util.js';
 import {
   discussions, currentDocId, docMeta, conversationSummary, summaryMessageCount, summaryDirty, citationFormat,
@@ -300,11 +301,7 @@ export async function maybeUpdateSummary(force = false) {
 }
 
 export async function callSummarize(text) {
-  const r = await fetch('/api/chat', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({ task:'summarize', text }),
-  });
+  const r = await chatFetch({ task:'summarize', text });
   const data = await r.json();
   if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
   return data.summary || '';

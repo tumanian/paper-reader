@@ -1,6 +1,18 @@
 // Shared proxy logic. Routes highlight chat to Sonnet and cheap tasks to Haiku.
 // Used by dev-server.js (local) and api/chat.js (Vercel).
 
+const {
+  extractClientIp,
+  parseBearerToken,
+  classifyTaskBucket,
+  limitsForBucket,
+  rateLimitKeys,
+  buildGuardPipeline,
+  parseGuardPipeline,
+  decideRateLimit,
+  kvRestConfig,
+} = require('./abuse-guard');
+
 const DEFAULT_CHAT_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5';
 
@@ -973,7 +985,81 @@ async function callCitationDetect(body) {
   };
 }
 
-async function handleChatRequest(body) {
+async function verifySupabaseToken(token) {
+  if (!token) return null;
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_ANON_KEY;
+  if (!url || !key) return null;
+
+  try {
+    const r = await fetch(`${url.replace(/\/$/, '')}/auth/v1/user`, {
+      headers: { apikey: key, Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (r.status === 401 || r.status === 403) return 'invalid';
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data?.id ? { userId: data.id } : 'invalid';
+  } catch {
+    return null;
+  }
+}
+
+async function runGuard({ bucket, ip, userId }) {
+  const cfg = kvRestConfig();
+  if (!cfg) return { allowed: true, killed: false, retryAfterSeconds: 0 };
+
+  const keys = rateLimitKeys({ bucket, ip, userId });
+  const { pipeline, meta } = buildGuardPipeline(keys);
+  const limits = limitsForBucket(bucket, !!userId);
+
+  try {
+    const r = await fetch(`${cfg.url}/pipeline`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(pipeline),
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) return { allowed: false, killed: false, retryAfterSeconds: 60 };
+    const results = await r.json();
+    const parsed = parseGuardPipeline(results, meta);
+    if (parsed.storeError) return { allowed: false, killed: false, retryAfterSeconds: 60 };
+    if (parsed.killed) return { allowed: false, killed: true, retryAfterSeconds: 0 };
+    const decision = decideRateLimit({ counts: parsed.counts, limits, ttls: parsed.ttls });
+    return { ...decision, killed: false };
+  } catch {
+    return { allowed: false, killed: false, retryAfterSeconds: 60 };
+  }
+}
+
+function extractUsage(result) {
+  const usage = result?.json?.usage;
+  if (!usage || typeof usage !== 'object') {
+    return { input: null, output: null, model: result?.json?.model || null };
+  }
+  return {
+    input: usage.input_tokens ?? null,
+    output: usage.output_tokens ?? null,
+    model: result?.json?.model || null,
+  };
+}
+
+function logChatRequest({ ip, userId, task, bucket, outcome, inputTokens, outputTokens, model }) {
+  console.info(JSON.stringify({
+    evt: 'chat_request',
+    ts: new Date().toISOString(),
+    ip: ip || null,
+    user_id: userId || null,
+    task,
+    bucket,
+    outcome,
+    input_tokens: inputTokens ?? null,
+    output_tokens: outputTokens ?? null,
+    model: model || null,
+  }));
+}
+
+async function routeChatBody(body) {
   if (body?.task === 'classify-selection') return callClassifySelection(body);
   if (body?.task === 'summarize') return callCheapSummary(body);
   if (body?.task === 'citation-match') return callCitationMatch(body);
@@ -983,6 +1069,48 @@ async function handleChatRequest(body) {
   if (body?.task === 'citation-format-detect') return callCitationFormatDetect(body);
   if (body?.task === 'bibliography-extract') return callBibliographyExtract(body);
   return callAnthropic(body);
+}
+
+async function handleChatRequest(body, ctx = {}) {
+  const task = body?.task || 'chat';
+  const bucket = classifyTaskBucket(task);
+  const ip = extractClientIp(ctx.headers, ctx.socketRemote);
+  const authToken = ctx.authToken ?? parseBearerToken(ctx.authorization);
+
+  const auth = await verifySupabaseToken(authToken);
+  if (auth === 'invalid') {
+    logChatRequest({ ip, userId: null, task, bucket, outcome: 401 });
+    return { status: 401, json: { error: 'invalid_token' } };
+  }
+  const userId = auth?.userId || null;
+
+  const guardResult = await runGuard({ bucket, ip, userId });
+  if (guardResult.killed) {
+    logChatRequest({ ip, userId, task, bucket, outcome: 503 });
+    return { status: 503, json: { error: 'chat_temporarily_unavailable' } };
+  }
+  if (!guardResult.allowed) {
+    logChatRequest({ ip, userId, task, bucket, outcome: 429 });
+    return {
+      status: 429,
+      json: { error: 'rate_limited', retry_after_seconds: guardResult.retryAfterSeconds },
+      headers: { 'Retry-After': String(guardResult.retryAfterSeconds) },
+    };
+  }
+
+  const result = await routeChatBody(body);
+  const usage = extractUsage(result);
+  logChatRequest({
+    ip,
+    userId,
+    task,
+    bucket,
+    outcome: result.status,
+    inputTokens: usage.input,
+    outputTokens: usage.output,
+    model: usage.model,
+  });
+  return result;
 }
 
 // ── SSRF guard ──────────────────────────────────────────────────────────────
@@ -1202,6 +1330,9 @@ module.exports = {
   callCitationDetect,
   callCitationFormatDetect,
   handleChatRequest,
+  routeChatBody,
+  verifySupabaseToken,
+  runGuard,
   handleFetchRequest,
   handleFetchPdfRequest,
   handleFetchImageRequest,

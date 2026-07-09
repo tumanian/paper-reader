@@ -181,6 +181,50 @@ test('an ordinary server error still surfaces as a plain error', async () => {
   );
 });
 
+test('chatFetch omits Authorization when signed out', async () => {
+  let chatHeaders = null;
+  app.setFetchHandler(async (url, opts) => {
+    if (url.includes('/api/chat')) {
+      chatHeaders = opts.headers;
+      return app.jsonResponse({ content: [{ type: 'text', text: 'mock reply' }] });
+    }
+    return undefined;
+  });
+  app.state.paperText = 'p '.repeat(20);
+  app.state.currentDocId = 'web::x';
+  app.state.docMeta = { name: 'P', mode: 'web', badge: 'Web', url: 'http://x' };
+  app.state.discussions = [{ id: 1, txt: 'passage', mode: 'web', pageNum: null, color: { bg: 'b', dot: 'd' }, relRects: [], messages: [] }];
+  app.state.activeId = 1;
+  app.document.getElementById('msg-input').value = 'Hello';
+  await app.sendMessage();
+  assert.ok(chatHeaders);
+  assert.equal(chatHeaders.Authorization, undefined);
+});
+
+test('chatFetch sends Authorization Bearer when signed in', async () => {
+  let chatHeaders = null;
+  app.setFetchHandler(async (url, opts) => {
+    if (url.includes('/api/config')) {
+      return app.jsonResponse({ supabaseUrl: 'https://fake.supabase.co', supabaseAnonKey: 'anon-key' });
+    }
+    if (url.includes('/api/chat')) {
+      chatHeaders = opts.headers;
+      return app.jsonResponse({ content: [{ type: 'text', text: 'mock reply' }] });
+    }
+    return undefined;
+  });
+  app.fakeSupabase.setSession({ user: { id: 'u1', email: 'a@b.com' }, access_token: 'session-tok' });
+  await app.PaperStore.init();
+  app.state.paperText = 'p '.repeat(20);
+  app.state.currentDocId = 'web::x';
+  app.state.docMeta = { name: 'P', mode: 'web', badge: 'Web', url: 'http://x' };
+  app.state.discussions = [{ id: 1, txt: 'passage', mode: 'web', pageNum: null, color: { bg: 'b', dot: 'd' }, relRects: [], messages: [] }];
+  app.state.activeId = 1;
+  app.document.getElementById('msg-input').value = 'Hello';
+  await app.sendMessage();
+  assert.equal(chatHeaders.Authorization, 'Bearer session-tok');
+});
+
 test('the user turn and assistant reply are recorded on the discussion', async () => {
   let d;
   const body = await sendAndCapture(() => {

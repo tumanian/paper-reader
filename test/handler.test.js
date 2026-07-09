@@ -12,7 +12,11 @@ const handler = require('../handler.js');
 let savedFetch;
 let savedKey;
 const CEILING_VARS = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'DAILY_REQUEST_LIMIT'];
+const KV_VARS = ['KV_REST_API_URL', 'KV_REST_API_TOKEN', 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'];
+const AUTH_VARS = ['SUPABASE_ANON_KEY'];
 let savedCeiling;
+let savedKv;
+let savedAuth;
 
 beforeEach(() => {
   savedFetch = global.fetch;
@@ -21,6 +25,10 @@ beforeEach(() => {
   // in run with the ceiling disabled (no extra counter fetch).
   savedCeiling = {};
   for (const k of CEILING_VARS) { savedCeiling[k] = process.env[k]; delete process.env[k]; }
+  savedKv = {};
+  for (const k of KV_VARS) { savedKv[k] = process.env[k]; delete process.env[k]; }
+  savedAuth = {};
+  for (const k of AUTH_VARS) { savedAuth[k] = process.env[k]; delete process.env[k]; }
   // Resolve any hostname to a public IP so the SSRF DNS guard stays hermetic
   // (the fetch proxies now validate every host + redirect hop). Real network is
   // never touched; global.fetch is mocked per-test.
@@ -33,6 +41,14 @@ afterEach(() => {
   for (const k of CEILING_VARS) {
     if (savedCeiling[k] === undefined) delete process.env[k];
     else process.env[k] = savedCeiling[k];
+  }
+  for (const k of KV_VARS) {
+    if (savedKv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedKv[k];
+  }
+  for (const k of AUTH_VARS) {
+    if (savedAuth[k] === undefined) delete process.env[k];
+    else process.env[k] = savedAuth[k];
   }
 });
 
@@ -406,6 +422,108 @@ test('citation-match rejects a string matchId that is not in the bibliography', 
   assert.equal(r.status, 200);
   assert.equal(r.json.isCitation, false);
   assert.equal(r.json.matchId, null);
+});
+
+// ── Abuse guard (rate limit + auth + kill switch) ─────────────────────────────
+function kvConfig() {
+  process.env.KV_REST_API_URL = 'https://fake-kv.upstash.io';
+  process.env.KV_REST_API_TOKEN = 'kv-test-token';
+}
+
+function mockPipelineResponse(overrides = {}) {
+  const killed = overrides.killed ? '0' : '1';
+  const minCount = overrides.minCount ?? 1;
+  const dayCount = overrides.dayCount ?? 1;
+  return [
+    { result: killed },
+    { result: minCount }, { result: 1 }, { result: 55 },
+    { result: dayCount }, { result: 1 }, { result: 4000 },
+  ];
+}
+
+test('handleChatRequest returns 401 for an invalid bearer token', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  process.env.SUPABASE_URL = 'https://fake.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-key';
+  global.fetch = async (url) => {
+    if (String(url).includes('/auth/v1/user')) return { status: 401, json: async () => ({}) };
+    throw new Error('model must not be called');
+  };
+  const r = await handler.handleChatRequest(
+    { messages: [{ role: 'user', content: 'hi' }] },
+    { headers: {}, authToken: 'bad-token' },
+  );
+  assert.equal(r.status, 401);
+  assert.equal(r.json.error, 'invalid_token');
+});
+
+test('handleChatRequest returns 429 when the rate-limit store reports over limit', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  kvConfig();
+  global.fetch = async (url) => {
+    if (String(url).includes('/pipeline')) {
+      return { ok: true, status: 200, json: async () => mockPipelineResponse({ minCount: 11 }) };
+    }
+    throw new Error('model must not be called');
+  };
+  const r = await handler.handleChatRequest(
+    { messages: [{ role: 'user', content: 'hi' }] },
+    { headers: { 'cf-connecting-ip': '1.2.3.4' } },
+  );
+  assert.equal(r.status, 429);
+  assert.equal(r.json.error, 'rate_limited');
+  assert.ok(r.headers['Retry-After']);
+});
+
+test('handleChatRequest fail-closes when the rate-limit store errors', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  kvConfig();
+  global.fetch = async (url) => {
+    if (String(url).includes('/pipeline')) return { ok: false, status: 500, json: async () => ({}) };
+    throw new Error('model must not be called');
+  };
+  const r = await handler.handleChatRequest(
+    { messages: [{ role: 'user', content: 'hi' }] },
+    { headers: { 'cf-connecting-ip': '1.2.3.4' } },
+  );
+  assert.equal(r.status, 429);
+  assert.equal(r.json.error, 'rate_limited');
+});
+
+test('handleChatRequest returns 503 when chat_enabled kill switch is set', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  kvConfig();
+  global.fetch = async (url) => {
+    if (String(url).includes('/pipeline')) {
+      return { ok: true, status: 200, json: async () => mockPipelineResponse({ killed: true }) };
+    }
+    throw new Error('model must not be called');
+  };
+  const r = await handler.handleChatRequest(
+    { messages: [{ role: 'user', content: 'hi' }] },
+    { headers: { 'cf-connecting-ip': '1.2.3.4' } },
+  );
+  assert.equal(r.status, 503);
+  assert.equal(r.json.error, 'chat_temporarily_unavailable');
+});
+
+test('handleChatRequest proceeds when guard is configured and under limit', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  kvConfig();
+  const cap = {};
+  global.fetch = async (url, opts) => {
+    if (String(url).includes('/pipeline')) {
+      return { ok: true, status: 200, json: async () => mockPipelineResponse({ minCount: 1, dayCount: 1 }) };
+    }
+    cap.url = url;
+    return { status: 200, json: async () => ({ content: [{ text: 'ok' }], usage: { input_tokens: 1, output_tokens: 2 }, model: 'claude-sonnet-4-6' }) };
+  };
+  const r = await handler.handleChatRequest(
+    { messages: [{ role: 'user', content: 'hi' }] },
+    { headers: { 'cf-connecting-ip': '1.2.3.4' } },
+  );
+  assert.equal(r.status, 200);
+  assert.equal(cap.url, 'https://api.anthropic.com/v1/messages');
 });
 
 // ── URL allow-list for the fetch proxies ─────────────────────────────────────

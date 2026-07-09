@@ -4,7 +4,7 @@
 // Owns the reader→chat surface: painting highlight rects, the discussion list,
 // opening/rebuilding a thread, the response-rating "golden set" capture, and the
 // sendMessage → callClaude round-trip (system-block assembly + prompt caching).
-
+import { chatFetch } from './api.js';
 import { esc, md } from './util.js';
 import { discussions, activeId, currentDocId, docMeta, paperText, MAX_PAPER_CHARS } from './state.js';
 import { setActiveId, addDiscussion, removeDiscussion } from './state.js';
@@ -717,11 +717,7 @@ export const BUDGET_EXHAUSTED_MESSAGE =
   'Your papers, highlights, and discussions are saved and will be here waiting.';
 
 export async function callClaude(system, messages) {
-  const r = await fetch('/api/chat', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:CHAT_MODEL,max_tokens:1000,system,messages})
-  });
+  const r = await chatFetch({model:CHAT_MODEL,max_tokens:1000,system,messages});
   const data = await r.json();
   if (data.error) {
     const raw = typeof data.error === 'string' ? data.error : data.error.message;

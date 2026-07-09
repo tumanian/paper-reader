@@ -974,6 +974,16 @@ window.PaperStore = (function () {
 
   function getIdentity() { return identity; }
 
+  async function getAccessToken() {
+    if (!supabase) return null;
+    try {
+      const { data } = await supabase.auth.getSession();
+      return data?.session?.access_token ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   function getUserId() { return userId; }
 
   function isSignedIn() { return !!userId; }
@@ -1173,6 +1183,7 @@ window.PaperStore = (function () {
     signInWithGoogle,
     signOut,
     getIdentity,
+    getAccessToken,
     getUserId,
     isSignedIn,
     getEmail,

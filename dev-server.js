@@ -8,6 +8,7 @@ const http = require('http');
 const fs   = require('fs');
 const path = require('path');
 const { handleChatRequest, handleFetchRequest, handleFetchPdfRequest, handleFetchImageRequest } = require('./handler');
+const { parseBearerToken } = require('./abuse-guard');
 
 const PORT = process.env.PORT || 3000;
 
@@ -90,8 +91,14 @@ const server = http.createServer(async (req, res) => {
       catch { res.writeHead(400, {'Content-Type':'application/json'});
               return res.end(JSON.stringify({ error: 'Invalid JSON.' })); }
 
-      const { status, json } = await handleChatRequest(body);
-      res.writeHead(status, { 'Content-Type': 'application/json' });
+      const { status, json, headers } = await handleChatRequest(body, {
+        headers: req.headers,
+        socketRemote: req.socket?.remoteAddress,
+        authToken: parseBearerToken(req.headers.authorization),
+      });
+      const outHeaders = { 'Content-Type': 'application/json' };
+      if (headers) Object.assign(outHeaders, headers);
+      res.writeHead(status, outHeaders);
       res.end(JSON.stringify(json));
     });
     return;

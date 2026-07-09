@@ -3,6 +3,7 @@
 // selection → match → preview pipeline. Networked + UI side; the pure matching
 // lives in citation-parse.js.
 
+import { chatFetch } from './api.js';
 import { esc, renderPreviewHtml, simpleHash, decodeXmlText, asGlobalRegex } from './util.js';
 import {
   currentDocId, docMeta, pendingSel, paperText, paperRefText, paperReferences, citationFormat, citationFormatPromise,
@@ -647,11 +648,7 @@ export async function ensureBibliography() {
   bibliographyExtractPromise = (async () => {
     const section = paperRefText || extractReferencesSection(paperText);
     try {
-      const r = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task: 'bibliography-extract', refText: section.slice(0, 16000) }),
-      });
+      const r = await chatFetch({ task: 'bibliography-extract', refText: section.slice(0, 16000) });
       const data = await r.json();
       if (data.error || !Array.isArray(data.references) || data.references.length < 3) {
         logCitation('fail', 'extract-refs-haiku', { reason: data.error || 'too few entries' });
@@ -700,17 +697,13 @@ export async function ensureCitationFormat(force = false) {
 
   setCitationFormatPromise((async () => {
     try {
-      const r = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: 'citation-format-detect',
-          bodySample: ctx.bodySample,
-          refSample: ctx.refSample,
-          inTextExamples: ctx.inTextExamples,
-          bibSample: ctx.bibSample,
-          refCount: paperReferences.length,
-        }),
+      const r = await chatFetch({
+        task: 'citation-format-detect',
+        bodySample: ctx.bodySample,
+        refSample: ctx.refSample,
+        inTextExamples: ctx.inTextExamples,
+        bibSample: ctx.bibSample,
+        refCount: paperReferences.length,
       });
       const data = await r.json();
       let format = data.error ? null : data;
@@ -748,12 +741,7 @@ export async function ensureCitationFormat(force = false) {
 
 
 async function callCitationMatch(payload, signal) {
-  const r = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: 'citation-match', ...payload }),
-    signal,
-  });
+  const r = await chatFetch({ task: 'citation-match', ...payload }, { signal });
   let data;
   try { data = await r.json(); } catch { throw new Error(`Citation match failed (HTTP ${r.status}).`); }
   if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
@@ -761,24 +749,14 @@ async function callCitationMatch(payload, signal) {
 }
 
 async function callCitationPreviewHaiku(payload, signal) {
-  const r = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: 'citation-preview', ...payload }),
-    signal,
-  });
+  const r = await chatFetch({ task: 'citation-preview', ...payload }, { signal });
   const data = await r.json();
   if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
   return data;
 }
 
 async function callCitationPreviewClaude(payload, signal) {
-  const r = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: 'citation-preview-claude', ...payload }),
-    signal,
-  });
+  const r = await chatFetch({ task: 'citation-preview-claude', ...payload }, { signal });
   const data = await r.json();
   if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
   return data;

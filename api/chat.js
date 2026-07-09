@@ -2,6 +2,7 @@
 // Reuses the same shared handler as the local server.
 
 const { handleChatRequest } = require('../handler');
+const { parseBearerToken } = require('../abuse-guard');
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
@@ -16,6 +17,15 @@ module.exports = async (req, res) => {
     catch { res.status(400).json({ error: 'Invalid JSON.' }); return; }
   }
 
-  const { status, json } = await handleChatRequest(body);
+  const ctx = {
+    headers: req.headers || {},
+    socketRemote: req.socket?.remoteAddress,
+    authToken: parseBearerToken(req.headers?.authorization),
+  };
+
+  const { status, json, headers } = await handleChatRequest(body, ctx);
+  if (headers) {
+    for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+  }
   res.status(status).json(json);
 };

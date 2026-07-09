@@ -2,6 +2,7 @@
 // math TeX capture, and the "discuss / explain math / open citation / read
 // later / return" actions that spawn discussions from a selection.
 
+import { chatFetch } from './api.js';
 import {
   pendingSel, pendingCitation, currentMode, currentDocId, docMeta, returnToDocId, returnToDocName, paperText,
   nextColor, addDiscussion, setPendingSel, setPendingCitation, setReturnToDocId, setReturnToDocName,
@@ -37,11 +38,7 @@ export function updateMathButtons() {
 
 // Ask Haiku to classify the raw selection. Returns 'math' | 'citation' | 'other'.
 async function classifySelection(text) {
-  const r = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: 'classify-selection', selection: text }),
-  });
+  const r = await chatFetch({ task: 'classify-selection', selection: text });
   const data = await r.json();
   if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
   return data.kind || 'other';
