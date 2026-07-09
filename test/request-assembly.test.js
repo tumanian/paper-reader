@@ -139,6 +139,48 @@ test('adds a CITATION CONTEXT block when opened from another paper', async () =>
   assert.match(cite.text, /\[12\]/);
 });
 
+test('a 429 from the proxy shows the friendly budget message instead of a raw error', async () => {
+  app.setFetchHandler(async (url) => {
+    if (url.includes('/api/chat')) {
+      return app.jsonResponse({ error: 'Daily request limit reached. Please try again later.' }, 429);
+    }
+    return undefined;
+  });
+  app.state.paperText = 'p '.repeat(20);
+  app.state.currentDocId = 'web::x';
+  app.state.docMeta = { name: 'P', mode: 'web', badge: 'Web', url: 'http://x' };
+  app.state.discussions = [{ id: 1, txt: 'passage', mode: 'web', pageNum: null, color: { bg: 'b', dot: 'd' }, relRects: [], messages: [] }];
+  app.state.activeId = 1;
+  app.document.getElementById('msg-input').value = 'Will this work?';
+  await app.sendMessage();
+
+  // Only the user turn is recorded — the failed reply is not persisted.
+  assert.deepEqual(app.state.discussions[0].messages.map((m) => m.role), ['user']);
+
+  // The rendered chat bubble carries the friendly message, without an "Error:" prefix.
+  const box = app.document.getElementById('chat-messages');
+  const last = box.children[box.children.length - 1];
+  assert.match(last.innerHTML, /come back tomorrow/i);
+  assert.doesNotMatch(last.innerHTML, /Error:/);
+});
+
+test('callClaude flags budget exhaustion for Anthropic billing errors too', async () => {
+  app.setFetchHandler(async () =>
+    app.jsonResponse({ error: { type: 'invalid_request_error', message: 'Your credit balance is too low.' } }, 400));
+  await assert.rejects(
+    app.callClaude([], [{ role: 'user', content: 'hi' }]),
+    (e) => e.budgetExhausted === true && e.message === app.constants.BUDGET_EXHAUSTED_MESSAGE,
+  );
+});
+
+test('an ordinary server error still surfaces as a plain error', async () => {
+  app.setFetchHandler(async () => app.jsonResponse({ error: 'Upstream request failed: boom' }, 502));
+  await assert.rejects(
+    app.callClaude([], [{ role: 'user', content: 'hi' }]),
+    (e) => !e.budgetExhausted && /Upstream request failed/.test(e.message),
+  );
+});
+
 test('the user turn and assistant reply are recorded on the discussion', async () => {
   let d;
   const body = await sendAndCapture(() => {

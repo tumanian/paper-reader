@@ -92,6 +92,7 @@ const SHIM = `
     constants: {
       MAX_PAPER_CHARS: (function(){return MAX_PAPER_CHARS;})(),
       CHAT_MODEL: (function(){return CHAT_MODEL;})(),
+      BUDGET_EXHAUSTED_MESSAGE: (function(){return BUDGET_EXHAUSTED_MESSAGE;})(),
     },
   };
 })();

@@ -701,12 +701,21 @@ export async function sendMessage() {
     scheduleSummaryUpdate();
   } catch(e) {
     if (d.mathKind) console.warn(`[Math] ${d.mathKind} · roundtrip failed:`, e.message);
-    loader.remove(); addMsg('assistant',`Error: ${e.message}`);
+    loader.remove();
+    addMsg('assistant', e.budgetExhausted ? e.message : `Error: ${e.message}`);
   }
   document.getElementById('send-btn').disabled = false;
 }
 
 const CHAT_MODEL = 'claude-sonnet-4-6';
+
+// Shown instead of a raw error when the model budget runs out: the proxy
+// returns 429 once the global daily ceiling trips, and Anthropic itself
+// answers with billing/limit language when the account spend cap is hit.
+export const BUDGET_EXHAUSTED_MESSAGE =
+  "We've used up today's Claude budget — please come back tomorrow. " +
+  'Your papers, highlights, and discussions are saved and will be here waiting.';
+
 export async function callClaude(system, messages) {
   const r = await fetch('/api/chat', {
     method:'POST',
@@ -714,7 +723,15 @@ export async function callClaude(system, messages) {
     body:JSON.stringify({model:CHAT_MODEL,max_tokens:1000,system,messages})
   });
   const data = await r.json();
-  if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message);
+  if (data.error) {
+    const raw = typeof data.error === 'string' ? data.error : data.error.message;
+    const e = new Error(raw);
+    if (r.status === 429 || /daily request limit|credit balance|spend limit/i.test(String(raw || ''))) {
+      e.budgetExhausted = true;
+      e.message = BUDGET_EXHAUSTED_MESSAGE;
+    }
+    throw e;
+  }
   return data.content?.[0]?.text ?? 'No response.';
 }
 
