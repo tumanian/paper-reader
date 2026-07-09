@@ -4,6 +4,7 @@
 import { esc, decodeXmlText, resolveMediaUrl, normalizeForMatch } from './util.js';
 import { sanitizeHtml } from './sanitize.js';
 import { findEquationAfter, rectsForElement, equationDisplayText, equationHighlightId, elementById } from './equation-highlight.js';
+import { maybeTrackTransformerPaperOpen } from './analytics.js';
 import {
   docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions, currentMode,
   extractedReferences, MAX_PAPER_CHARS,
@@ -78,6 +79,8 @@ export async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
   }
 
   url = smartRewrite(url);
+
+  maybeTrackTransformerPaperOpen(url, { knownDocId, citation: citationContext });
 
   const errEl = document.getElementById('url-error');
   errEl.style.display = 'none';
@@ -200,6 +203,8 @@ export async function loadArxivPdf(rawUrl, knownDocId, citationContext = null) {
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
   const arxivId = parseArxivId(url);
   if (!arxivId) throw new Error('Not a valid arXiv URL');
+
+  maybeTrackTransformerPaperOpen(arxivId, { knownDocId, citation: citationContext });
 
   const absUrl = arxivAbsUrl(arxivId);
   const pdfUrl = arxivPdfUrl(arxivId);

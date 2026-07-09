@@ -13,6 +13,7 @@ import { persistCurrentDoc } from './persistence.js';
 import { parseCitation, parseParentheticalAuthorYear } from './citation-parse.js';
 import { findEquationAfter, rectsForElement, equationDisplayText, equationHighlightId } from './equation-highlight.js';
 import { loadWebPage, locateTextRange, rectsForRange } from './web-loader.js';
+import { markTransformerOpenSource } from './analytics.js';
 import { loadCitationPreview, seedOnboardingCitationCache } from './citation-resolve.js';
 import { positionPopover } from './selection.js';
 import { armFigureCapture, figureToast, FIGURE_CAPTURE_ENABLED } from './figure.js';
@@ -221,6 +222,7 @@ export async function openOnboardingPaper(paper) {
     return;
   }
   pendingOnboarding = paper;
+  markTransformerOpenSource('featured');
   await loadWebPage(paper.url);
 }
 
