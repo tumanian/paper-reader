@@ -403,6 +403,14 @@ body {
   display:flex; align-items:center; justify-content:center; transition:color .12s, border-color .12s, background .12s;
 }
 #sidebar-collapse-btn:hover { color:#ddd; border-color:#555; background:#1e1e1e; }
+/* Default explanation level pill (Pro ↔ ELI5) */
+#explain-level-btn {
+  background:none; border:1px solid #333; border-radius:6px; color:#777;
+  height:28px; padding:0 9px; flex-shrink:0; cursor:pointer; font-size:11px; font-weight:600;
+  display:flex; align-items:center; justify-content:center; transition:color .12s, border-color .12s, background .12s;
+}
+#explain-level-btn:hover { color:#ddd; border-color:#555; background:#1e1e1e; }
+#explain-level-btn.eli5 { color:#aeb6ff; border-color:#3a3f6e; background:#23264a; }
 #sidebar-expand-btn {
   display:none; flex-shrink:0; width:44px; align-self:stretch;
   background:#141414; border:none; border-left:1px solid #252525;
@@ -464,6 +472,13 @@ body {
 .msg-rate-reason:hover { background:#262626; color:#cfcfcf; }
 .msg-rate-reason.active { background:#3a2727; border-color:#5a3434; color:#e0b3b3; }
 .msg-rate-thanks { font-size:10px; color:#555; }
+/* "ELI5 this" — same subtle per-response weight as the rating pills */
+.msg-eli5-btn {
+  background:#1e1e1e; border:1px solid #2a2a2a; color:#9a9a9a; cursor:pointer;
+  font-size:10px; padding:2px 7px; border-radius:10px; margin-left:2px;
+  transition:background .12s, color .12s;
+}
+.msg-eli5-btn:hover { background:#23264a; border-color:#3a3f6e; color:#aeb6ff; }
 .typing-dots { display:flex; gap:4px; padding:4px 2px; }
 .t-dot { width:5px; height:5px; background:#555; border-radius:50%; animation:td 1.2s ease-in-out infinite; }
 .t-dot:nth-child(2) { animation-delay:.15s; }
@@ -575,6 +590,7 @@ body {
         <span id="sidebar-title">Discussions</span>
         <span id="disc-count">0</span>
       </div>
+      <button id="explain-level-btn" type="button" aria-label="Default explanation level">Pro</button>
       <button id="sidebar-collapse-btn" type="button" title="Hide discussions" aria-label="Hide discussions">→</button>
     </div>
     <div id="disc-list-panel">

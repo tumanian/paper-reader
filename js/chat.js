@@ -23,6 +23,54 @@ export function setChatHooks({ runOnboardingDemo } = {}) {
 
 const FEATURE_CTA = { math: '✨ Explain math', code: '{ } To code', citation: '📚 Show citation', figure: '🖼 Explain a figure' };
 
+// ═══════════════════════════════════════════════════════
+//  EXPLANATION LEVEL — Practitioner (default) vs ELI5
+// ═══════════════════════════════════════════════════════
+// Design principle: respect the reader — the full, rigorous answer is the
+// baseline; ELI5 is an on-demand simplification, never a preemptive dumbing
+// down. The level is purely a prompt modifier on the existing send pipeline:
+// same highlight, same cached full-paper block, same abuse-guarded proxy.
+export const EXPLAIN_LEVEL_KEY = 'paperReader.explainLevel.v1';
+
+export const BASE_INSTRUCTION =
+  `You are a sharp, concise research assistant helping someone read a paper or article. ` +
+  `Answer using the FULL DOCUMENT provided below as your source of truth — resolve references ` +
+  `like "this", "the above equation", or "the previous section" against it. ` +
+  `Lead with the core point, then briefly elaborate. Use plain language even for dense technical content. ` +
+  `If something genuinely isn't in the document, say so rather than guessing.`;
+
+export const ELI5_MODIFIER =
+  `EXPLAIN LIKE I'M FIVE: the researcher asked for a beginner-friendly explanation. ` +
+  `Explain in plain language for someone completely new to this field. Avoid jargon — if a ` +
+  `technical term is unavoidable, define it in a few words. Favor concrete intuition and ` +
+  `everyday analogies over formal precision. Keep it short.`;
+
+// The visible user turn appended by the "ELI5 this" button. A plain user
+// message (not a hidden one) keeps the API's role alternation valid and makes
+// persistence / cloud sync / restore free.
+export const ELI5_FOLLOWUP_TEXT = "Explain this like I'm five.";
+
+export function sanitizeExplainLevel(v) {
+  return v === 'eli5' ? 'eli5' : 'practitioner';
+}
+
+// Practitioner = the current instruction, byte-for-byte. ELI5 prepends the
+// modifier so math/code/figure framing blocks downstream inherit it too.
+export function instructionForLevel(level, base = BASE_INSTRUCTION) {
+  return sanitizeExplainLevel(level) === 'eli5' ? `${ELI5_MODIFIER}\n\n${base}` : base;
+}
+
+export function getDefaultExplainLevel() {
+  try { return sanitizeExplainLevel(localStorage.getItem(EXPLAIN_LEVEL_KEY)); }
+  catch { return 'practitioner'; }
+}
+
+export function setDefaultExplainLevel(level) {
+  const l = sanitizeExplainLevel(level);
+  try { localStorage.setItem(EXPLAIN_LEVEL_KEY, l); } catch {}
+  return l;
+}
+
 export function paintHighlight(d) {
   const layer = d.wrapper?.querySelector('.highlights-layer');
   if (!layer) return;
@@ -381,9 +429,18 @@ function renderRatingControl(msgDiv, d, msgIndex) {
   row.innerHTML =
     `<button class="msg-rate-btn up" title="Good response">👍</button>` +
     `<button class="msg-rate-btn down" title="Bad response">👎</button>` +
+    `<button class="msg-eli5-btn" title="Re-explain this in plain, beginner-friendly terms (appends below)">ELI5</button>` +
     `<span class="msg-rate-thanks"></span>` +
     `<div class="msg-rate-reasons" style="display:none"></div>`;
   msgDiv.appendChild(row);
+
+  // "ELI5 this" — re-asks the same thing at the ELI5 level and APPENDS the
+  // simpler answer; the rigorous original stays in the thread. A normal chat
+  // request: same pipeline, same abuse-guard quota.
+  row.querySelector('.msg-eli5-btn').addEventListener('click', () => {
+    if (document.getElementById('send-btn').disabled) return; // a send is already in flight
+    askQuestion(d, ELI5_FOLLOWUP_TEXT, { level: 'eli5' });
+  });
 
   const upBtn = row.querySelector('.up');
   const downBtn = row.querySelector('.down');
@@ -544,6 +601,15 @@ export async function sendMessage() {
   const d = discussions.find(x => x.id === activeId); if (!d) return;
 
   input.value=''; input.style.height='auto';
+  await askQuestion(d, txt, { level: getDefaultExplainLevel() });
+}
+
+// The single send pipeline: pushes the user turn, assembles the system blocks
+// (instruction · cached full paper · feature framing · highlight), calls Claude
+// through the abuse-guarded proxy, and appends the reply. `level` swaps the
+// instruction block only — "ELI5 this" re-asks ride the exact same path (and
+// the same rate-limit quota) as a typed question.
+export async function askQuestion(d, txt, { level = 'practitioner' } = {}) {
   d.messages.push({role:'user',content:txt,createdMs:Date.now(),id:await PaperStore.messageClientId(d.id,'user',txt)}); addMsg('user',txt);
   persistCurrentDoc();
   scheduleSummaryUpdate();
@@ -554,15 +620,11 @@ export async function sendMessage() {
   // ── Assemble system as content blocks so the paper can be cached ──
   const systemBlocks = [];
 
-  // 1) Instruction block (small, not cached separately)
+  // 1) Instruction block (small, not cached separately). ELI5 prepends its
+  // modifier; Practitioner is the unmodified baseline.
   systemBlocks.push({
     type: 'text',
-    text:
-      `You are a sharp, concise research assistant helping someone read a paper or article. ` +
-      `Answer using the FULL DOCUMENT provided below as your source of truth — resolve references ` +
-      `like "this", "the above equation", or "the previous section" against it. ` +
-      `Lead with the core point, then briefly elaborate. Use plain language even for dense technical content. ` +
-      `If something genuinely isn't in the document, say so rather than guessing.`,
+    text: instructionForLevel(level),
   });
 
   // 2) Full-paper block (CACHED — same text on every question → cheap repeats)
@@ -733,6 +795,23 @@ export async function callClaude(system, messages) {
 
 // Wire up chat DOM listeners. Called once from boot().
 export function initChat() {
+  // Global default explanation level — a two-state pill in the sidebar header.
+  // Only changes the STARTING level of new answers; "ELI5 this" works regardless.
+  const lvlBtn = document.getElementById('explain-level-btn');
+  const paintLevel = () => {
+    const eli5 = getDefaultExplainLevel() === 'eli5';
+    lvlBtn.textContent = eli5 ? 'ELI5' : 'Pro';
+    lvlBtn.title = eli5
+      ? 'New answers start beginner-friendly — click for full rigor by default'
+      : 'New answers start at full rigor — click to default to ELI5';
+    lvlBtn.classList.toggle('eli5', eli5);
+  };
+  lvlBtn.addEventListener('click', () => {
+    setDefaultExplainLevel(getDefaultExplainLevel() === 'eli5' ? 'practitioner' : 'eli5');
+    paintLevel();
+  });
+  paintLevel();
+
   document.getElementById('back-btn').addEventListener('click', showList);
   document.getElementById('sidebar-collapse-btn').addEventListener('click', () => setSidebarCollapsed(true));
   document.getElementById('sidebar-expand-btn').addEventListener('click', () => setSidebarCollapsed(false));

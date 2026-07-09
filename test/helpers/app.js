@@ -73,6 +73,7 @@ const SHIM = `
       initStorage, loadStore, persistCurrentDoc,
       sendMessage, callClaude, buildRatingRecord, ratingIdFor,
       renderList, deleteDiscussion, syncMessagesFromCloud, startMessagePoll, stopMessagePoll,
+      askQuestion, sanitizeExplainLevel, instructionForLevel, getDefaultExplainLevel, setDefaultExplainLevel,
     },
     state: {
       paperText: acc(function(){return paperText;}, function(v){paperText=v;}),
@@ -93,6 +94,10 @@ const SHIM = `
       MAX_PAPER_CHARS: (function(){return MAX_PAPER_CHARS;})(),
       CHAT_MODEL: (function(){return CHAT_MODEL;})(),
       BUDGET_EXHAUSTED_MESSAGE: (function(){return BUDGET_EXHAUSTED_MESSAGE;})(),
+      EXPLAIN_LEVEL_KEY: (function(){return EXPLAIN_LEVEL_KEY;})(),
+      BASE_INSTRUCTION: (function(){return BASE_INSTRUCTION;})(),
+      ELI5_MODIFIER: (function(){return ELI5_MODIFIER;})(),
+      ELI5_FOLLOWUP_TEXT: (function(){return ELI5_FOLLOWUP_TEXT;})(),
     },
   };
 })();
