@@ -9,6 +9,7 @@ import { initSelection, setSelectionHooks, updateReturnButton, finishCitationNav
 import { initFigure, setFigureHooks } from './figure.js';
 import { initChat, setChatHooks, paintHighlight, renderList, openChat, sendMessage, showList, findNearbyContext, setSidebarCollapsed, stopMessagePoll } from './chat.js';
 import { runOnboardingDemo, cancelOnboardingPlacement, maybeApplyOnboardingCuration, getFeaturedPaper, openFeaturedExample, loadOnboardingData, loadOnboardingActionCache } from './onboarding.js';
+import { initTouchNotice } from './touch-notice.js';
 
 // Initialize Vercel Web Analytics per the "Other" framework quickstart
 // (https://vercel.com/docs/analytics/quickstart?framework=other): import the
@@ -130,6 +131,7 @@ setChatHooks({
 });
 
 (async function boot() {
+  initTouchNotice();
   initStorage();
   initLibrary();
   initPdf();
