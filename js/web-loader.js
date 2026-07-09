@@ -3,6 +3,7 @@
 
 import { esc, decodeXmlText, resolveMediaUrl, normalizeForMatch } from './util.js';
 import { sanitizeHtml } from './sanitize.js';
+import { findEquationAfter, rectsForElement, equationDisplayText, equationHighlightId, elementById } from './equation-highlight.js';
 import {
   docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions, currentMode,
   extractedReferences, MAX_PAPER_CHARS,
@@ -686,6 +687,31 @@ function locateTextRangeFuzzy(root, snippet) {
 function relocateWebDiscussionRects(d, aw, body) {
   if (!d || d.mode !== 'web' || !aw || !body) return;
   if (d.figure) return;
+
+  // Onboarding math/code highlights target the display equation, not the prose
+  // anchor snippet — re-measure by stable id when the page reflows.
+  if (d.equationId) {
+    const eq = elementById(body, d.equationId);
+    if (eq) {
+      const rects = rectsForElement(eq, aw);
+      if (rects.length) { d.relRects = rects; return; }
+    }
+  }
+
+  // Onboarding math/code anchors on prose — upgrade to the display equation when
+  // placement ran before the equation was in the DOM (or before equation targeting).
+  if (d.onboarding && (d.feature === 'math' || d.feature === 'code') && d._range && rangeIsConnected(d._range)) {
+    const eq = findEquationAfter(d._range);
+    if (eq) {
+      const rects = rectsForElement(eq, aw);
+      if (rects.length) {
+        d.relRects = rects;
+        d.equationId = equationHighlightId(eq);
+        d.txt = equationDisplayText(eq, d.mathTex || d.tex);
+        return;
+      }
+    }
+  }
 
   // Live DOM Range survives reflow — re-measure its client rects.
   if (d._range && rangeIsConnected(d._range)) {

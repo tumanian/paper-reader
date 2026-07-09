@@ -199,6 +199,7 @@ export async function persistCurrentDoc() {
       color: d.color, relRects: d.relRects, messages: d.messages,
       citationMeta: d.citationMeta || null,
       mathKind: d.mathKind || null, mathTex: d.mathTex || null,
+      equationId: d.equationId || null,
       note: d.note || null, onboarding: d.onboarding || false,
       feature: d.feature || null, tex: d.tex || null, cite: d.cite || null,
       // Figure metadata only — the captured pixels live in IndexedDB (keyed by

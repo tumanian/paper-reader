@@ -7,10 +7,11 @@
 // feature on first click" demo behaviour for teaching highlights.
 
 import { isTodoValue, normalizeForMatch } from './util.js';
-import { currentMode, discussions, nextColor } from './state.js';
+import { currentMode, discussions, docMeta, nextColor } from './state.js';
 import { setPendingSel, setPendingCitation, clearDiscussions, addDiscussion } from './state.js';
 import { persistCurrentDoc } from './persistence.js';
 import { parseCitation, parseParentheticalAuthorYear } from './citation-parse.js';
+import { findEquationAfter, rectsForElement, equationDisplayText, equationHighlightId } from './equation-highlight.js';
 import { loadWebPage, locateTextRange, rectsForRange } from './web-loader.js';
 import { loadCitationPreview, seedOnboardingCitationCache } from './citation-resolve.js';
 import { positionPopover } from './selection.js';
@@ -228,26 +229,7 @@ export async function openOnboardingPaper(paper) {
 // (node, offset) map, finds the snippet, and rebuilds a Range. Returns null if
 // not found (caller skips silently).
 // locateTextRange + rectsForRange live in web-loader.js (shared with resize reflow).
-
-// Formula snippets anchor on the prose right before an equation (MathML isn't
-// text-locatable), so the highlight would visually miss the math. Find the
-// display-equation element that follows the anchor and include its rect.
-const EQUATION_SELECTOR = '.ltx_equation, .ltx_equationgroup, .ltx_eqn_table, math[display="block"], mjx-container[display="true"], .MathJax_Display, .katex-display';
-function findEquationAfter(range) {
-  let el = range.endContainer.nodeType === 3 ? range.endContainer.parentElement : range.endContainer;
-  // Climb out of inline elements to the enclosing block first.
-  while (el && el !== document.body && getComputedStyle(el).display === 'inline') el = el.parentElement;
-  for (let hops = 0; el && hops < 6; hops++) {
-    let sib = el.nextElementSibling;
-    for (let i = 0; sib && i < 4; i++, sib = sib.nextElementSibling) {
-      if (sib.matches?.(EQUATION_SELECTOR)) return sib;
-      const inner = sib.querySelector?.(EQUATION_SELECTOR);
-      if (inner) return inner;
-    }
-    el = el.parentElement; // anchor may sit deep inside the paragraph
-  }
-  return null;
-}
+// findEquationAfter + rectsForElement live there too (math/code highlight placement).
 
 // The demo auto-run leaves exactly one canned user/assistant pair behind; any
 // other messages mean the visitor actually engaged with the thread.
@@ -263,9 +245,22 @@ function isUntouchedOnboardingDemo(d) {
 
 // Paint precomputed highlights for the just-opened onboarding paper. Reuses the
 // normal discussion + paintHighlight path; skips unmatched snippets silently.
+function onboardingPaperForUrl(url) {
+  const data = onboardingData;
+  if (!data?.papers || !url) return null;
+  const norm = String(url).replace(/\/$/, '');
+  for (const paper of Object.values(data.papers)) {
+    if (paper?.url && String(paper.url).replace(/\/$/, '') === norm) return paper;
+  }
+  return null;
+}
+
 export function maybeApplyOnboardingCuration() {
-  const paper = pendingOnboarding;
+  let paper = pendingOnboarding;
   pendingOnboarding = null;
+  if (!paper && currentMode === 'web' && docMeta?.url) {
+    paper = onboardingPaperForUrl(docMeta.url);
+  }
   if (!paper || currentMode !== 'web' || !Array.isArray(paper.items)) {
     activeOnboardingPaperId = null;
     return;
@@ -273,6 +268,9 @@ export function maybeApplyOnboardingCuration() {
   activeOnboardingPaperId = paper.paperId || null;
   applyOnboardingActionCache(activeOnboardingPaperId);
   if (discussions.length > 0) {
+    // Re-patch math/code highlights that were placed before equation targeting
+    // worked (e.g. ar5iv tables after DOMPurify drop ltx_equation classes).
+    if (repatchOnboardingEquationHighlights(paper.items)) return;
     // Reopened. If the visitor never engaged (every highlight is an onboarding
     // demo that's untouched, or holds only the auto-played demo exchange),
     // refresh from the latest curation so fixes/new demos replace stale
@@ -284,6 +282,42 @@ export function maybeApplyOnboardingCuration() {
     clearDiscussions();
   }
   applyOnboardingItems(paper.items.slice());
+}
+
+// Fix stale math/code demo highlights in place (keeps messages) when equation
+// placement metadata is missing or rects still cover the prose anchor.
+function repatchOnboardingEquationHighlights(items) {
+  const aw = document.getElementById('article-wrapper');
+  const body = document.getElementById('article-body');
+  if (!aw || !body) return false;
+  let changed = false;
+  for (const d of discussions) {
+    if (!d.onboarding || (d.feature !== 'math' && d.feature !== 'code')) continue;
+    if (d.equationId) continue;
+    const item = items.find((it) => it.feature === d.feature && it.tex === d.tex);
+    if (!item) continue;
+    const range = locateTextRange(body, item.snippet);
+    if (!range) continue;
+    const eq = findEquationAfter(range);
+    if (!eq) continue;
+    const eqRects = rectsForElement(eq, aw);
+    if (!eqRects.length) continue;
+    d.relRects = eqRects;
+    d.txt = equationDisplayText(eq, item.tex);
+    d.equationId = equationHighlightId(eq);
+    d._range = range.cloneRange();
+    changed = true;
+  }
+  if (!changed) return false;
+  const layer = aw.querySelector('.highlights-layer');
+  if (layer) layer.innerHTML = '';
+  for (const d of discussions) {
+    if (d.mode === 'web' && d.wrapper == null) d.wrapper = aw;
+    if (d.mode === 'web' && !d.figure) paintHighlight(d);
+  }
+  renderList();
+  persistCurrentDoc();
+  return true;
 }
 
 // Place curated highlights, reusing the normal discussion + paintHighlight path.
@@ -310,27 +344,30 @@ function applyOnboardingItems(items) {
         // Figure capture is disabled — don't paint its teaching highlight.
         if (item.feature === 'figure' && !FIGURE_CAPTURE_ENABLED) continue;
         const range = locateTextRange(body, item.snippet);
-        const relRects = range ? rectsForRange(range, aw) : [];
-        if (!relRects.length) { stillMissing.push(item); continue; }
+        if (!range) { stillMissing.push(item); continue; }
         const feature = ['math', 'code', 'citation', 'discuss', 'figure'].includes(item.feature) ? item.feature : 'discuss';
-        // Math/code snippets anchor on prose next to the equation — extend the
-        // highlight to cover the equation itself so the selection looks right.
+        let relRects = rectsForRange(range, aw);
+        let highlightTxt = normalizeForMatch(range.toString());
+        let equationId = null;
+        // Math/code snippets anchor on prose next to the equation — highlight the
+        // equation itself so the selection isn't scattered across the paragraph.
         if (feature === 'math' || feature === 'code') {
           const eq = findEquationAfter(range);
-          if (eq) {
-            const wrap = aw.getBoundingClientRect();
-            const r = eq.getBoundingClientRect();
-            if (r.width > 1 && r.height > 1) {
-              relRects.push({ left: r.left - wrap.left, top: r.top - wrap.top, width: r.width, height: r.height });
-            }
-          }
+          if (!eq) { stillMissing.push(item); continue; }
+          const eqRects = rectsForElement(eq, aw);
+          if (!eqRects.length) { stillMissing.push(item); continue; }
+          relRects = eqRects;
+          highlightTxt = equationDisplayText(eq, item.tex);
+          equationId = equationHighlightId(eq);
         }
+        if (!relRects.length) { stillMissing.push(item); continue; }
         const d = {
           id: PaperStore.newId(),
-          txt: normalizeForMatch(range.toString()),
+          txt: highlightTxt,
           mode: 'web', pageNum: null, color: nextColor(), wrapper: aw,
           relRects, messages: [],
           _range: range.cloneRange(),
+          equationId,
           note: item.note || null, onboarding: true,
           feature, tex: item.tex || null, cite: item.cite || null,
           // Stamp math metadata at placement (not first click) so the formula
