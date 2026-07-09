@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Privacy Policy · Paper Reader</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-S9Q89BCV0E"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-S9Q89BCV0E');
+</script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -37,7 +46,7 @@
   </a>
 
   <h1>Privacy Policy</h1>
-  <div class="updated">Last updated: July 3, 2026</div>
+  <div class="updated">Last updated: July 8, 2026</div>
 
   <p>This Privacy Policy explains how <strong>Paper Reader</strong> ("we", "us", the "Service"), operated by <strong>Gurgen Tumanyan</strong>, handles information when you use the app at <strong>paper-reader.dev</strong>.</p>
 
@@ -48,6 +57,7 @@
     <li><strong>Account information.</strong> When you sign in with Google, we receive your email address, name, and profile photo from your Google account (via Supabase Authentication). We do not receive your Google password.</li>
     <li><strong>Content you create.</strong> Papers you open or upload (including PDF files), web/arXiv links you load, text you highlight, your chat messages and discussions, "read later" items, and thumbs up/down feedback on responses.</li>
     <li><strong>Technical data.</strong> Standard information required to operate the Service, such as request logs and error diagnostics handled by our hosting and infrastructure providers.</li>
+    <li><strong>Usage analytics.</strong> We use Google Analytics to understand aggregate usage of the Service (pages visited, approximate location, device and browser type). Google Analytics sets cookies and collects usage data as described in its own policies; we do not send it the content of your papers, highlights, or chats.</li>
   </ul>
 
   <h2>Using Paper Reader without an account</h2>
@@ -73,6 +83,7 @@
     <li><strong>Public CORS proxies</strong> (e.g. allorigins.win, corsproxy.io) — used as a fallback to fetch the text of public web articles you choose to load. The URL you enter is passed to these services to retrieve the page.</li>
     <li><strong>Crossref and arXiv</strong> — public academic metadata services queried to resolve citations and load arXiv papers. When you view a citation or open an arXiv link, the relevant title, DOI, or arXiv identifier is sent to these services.</li>
     <li><strong>Vercel</strong> — application hosting and the stateless server functions that proxy requests to Anthropic and fetch papers.</li>
+    <li><strong>Google Analytics</strong> — aggregate usage measurement, as described above. See the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a> and <a href="https://policies.google.com/technologies/partner-sites" target="_blank" rel="noopener">how Google uses data from partner sites</a>. You can opt out with the <a href="https://tools.google.com/dlpage/gaoptout" target="_blank" rel="noopener">Google Analytics opt-out browser add-on</a>.</li>
   </ul>
 
   <h2>Data stored on your device</h2>
