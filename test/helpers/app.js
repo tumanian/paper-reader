@@ -58,6 +58,7 @@ const SHIM = `
       migrateDoc, migrateStore, migrateReadLaterList, restoreDiscussions, docIdFor, simpleHash,
       conversationMessageCount, buildSummarySource, nextColor,
       sanitizePdfString, pdfFontSize, combinePdfTextItems, pdfTextItemsToString, normalizePdfSelectionText,
+      pdfSelectionTextFromRects, collectPdfSelectionSpans, renderPDFPages,
       parseArxivId, arxivAbsUrl, arxivPdfUrl, arxivIdFromUrl,
       asGlobalRegex, looksLikeCitation, extractRefNumber, extractReferencesSection, resolveReferenceEntry,
       isPlausibleAuthorPart, parseAuthorYearFromSelection, parsePartialAuthorYearFromSelection,
@@ -89,6 +90,7 @@ const SHIM = `
       activeId: acc(function(){return activeId;}, function(v){activeId=v;}),
       conversationSummary: acc(function(){return conversationSummary;}, function(v){conversationSummary=v;}),
       summaryMessageCount: acc(function(){return summaryMessageCount;}, function(v){summaryMessageCount=v;}),
+      pdfDoc: acc(function(){return pdfDoc;}, function(v){pdfDoc=v;}),
     },
     constants: {
       MAX_PAPER_CHARS: (function(){return MAX_PAPER_CHARS;})(),
@@ -98,6 +100,7 @@ const SHIM = `
       BASE_INSTRUCTION: (function(){return BASE_INSTRUCTION;})(),
       ELI5_MODIFIER: (function(){return ELI5_MODIFIER;})(),
       ELI5_FOLLOWUP_TEXT: (function(){return ELI5_FOLLOWUP_TEXT;})(),
+      TEXT_LAYER_STRETCH_TOLERANCE: (function(){return TEXT_LAYER_STRETCH_TOLERANCE;})(),
     },
   };
 })();

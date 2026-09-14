@@ -12,7 +12,7 @@ import { addToReadLater, reopenDoc } from './library.js';
 import { loadWebPage, setStatus, buildPaperReferences } from './web-loader.js';
 import { parseCitation, parseParentheticalAuthorYear, parseBibliographyMetadata } from './citation-parse.js';
 import { loadCitationPreview, cancelCitationPreview } from './citation-resolve.js';
-import { normalizePdfSelectionText } from './pdf.js';
+import { normalizePdfSelectionText, pdfSelectionTextFromRects, collectPdfSelectionSpans } from './pdf.js';
 
 // Chat deps not yet extracted — wired via setSelectionHooks (`_sel`-prefixed).
 let _selOpenChat = () => {};
@@ -350,7 +350,15 @@ export function initSelection() {
       const pageWrap = selEl.closest('.pdf-page-wrapper');
       if (pageWrap) {
         const pr = pageWrap.getBoundingClientRect();
-        const cleanTxt = normalizePdfSelectionText(txt);
+        // sel.toString() reads the text layer's characters, which only match
+        // the glyphs under the cursor when the layer is sized correctly. Check
+        // the touched spans against their intended width and, if the layer is
+        // stretched, take the text from the same rects the highlight uses.
+        const geomTxt = pdfSelectionTextFromRects(rawRects, collectPdfSelectionSpans(range, pageWrap));
+        if (geomTxt && geomTxt !== txt) {
+          console.warn('[Selection] text layer misaligned; derived text from highlight rects', { dom: txt, rects: geomTxt });
+        }
+        const cleanTxt = normalizePdfSelectionText(geomTxt || txt);
         setPendingSel({
           txt: cleanTxt, range: range.cloneRange(), mode:'pdf', pageNum:+pageWrap.dataset.page, wrapper: pageWrap,
           relRects: rawRects.map(r => ({ left:r.left-pr.left, top:r.top-pr.top, width:r.width, height:r.height })),

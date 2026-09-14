@@ -185,6 +185,91 @@ export function normalizePdfSelectionText(text) {
   return t;
 }
 
+// ── Selection ↔ text-layer geometry ──────────────────────────────────────
+// pdf.js 3.x positions each text-layer span at the glyph run's left edge, sizes
+// it with `calc(var(--scale-factor) * <font px>)`, then applies
+// `scaleX(runWidth·scale / measuredWidth)` so the invisible text covers exactly
+// the glyphs painted on the canvas. If `--scale-factor` is missing the calc()
+// is invalid and every span falls back to the inherited font size: left edges
+// stay put but the text inside is stretched by (inherited / intended). A drag
+// over "DINOv3" near the end of a merged line then lands on characters several
+// positions earlier ("s on DIN"). The highlight — painted from the range's own
+// client rects — still looks right; only the text is wrong.
+//
+// renderPDFPages() sets the variable (the real fix) and records each span's
+// intended width in data-w so the mouseup handler can detect any residual
+// stretch and re-derive the text from the highlighted rects instead.
+export const TEXT_LAYER_STRETCH_TOLERANCE = 0.02;
+
+// Rendered width / intended width for a span; 1 when it can't be judged
+// (pdf.js only scaleX-fits runs longer than one glyph).
+function textLayerSpanStretch(span) {
+  if (!(span.trueWidth > 0) || !(span.box.width > 0) || span.text.length < 2) return 1;
+  return span.box.width / span.trueWidth;
+}
+
+// Re-derive selected text from the selection's client rects and the text-layer
+// spans they touch. `spans` is the model built by collectPdfSelectionSpans():
+//   { text, box:{left,top,right,bottom,width,height}, trueWidth, charBoxes() }
+// where charBoxes() yields the rendered {left,right} of every character.
+// Returns null when every span is aligned (the DOM's own selection text is
+// then correct and should be used as-is).
+export function pdfSelectionTextFromRects(rects, spans, tolerance = TEXT_LAYER_STRETCH_TOLERANCE) {
+  if (!rects?.length || !spans?.length) return null;
+  if (!spans.some((s) => Math.abs(textLayerSpanStretch(s) - 1) > tolerance)) return null;
+
+  const lines = [];
+  for (const span of spans) {
+    const { box } = span;
+    // Rects on this span's line: at least half the rect overlaps it vertically.
+    const hits = rects.filter((r) => {
+      const overlap = Math.min(r.bottom, box.bottom) - Math.max(r.top, box.top);
+      return overlap >= 0.5 * Math.min(r.height, box.height);
+    });
+    if (!hits.length) continue;
+
+    const k = textLayerSpanStretch(span);
+    const boxes = span.charBoxes();
+    let out = '';
+    for (let i = 0; i < span.text.length && i < boxes.length; i++) {
+      // Undo the stretch: the span's left edge is exact, every character to the
+      // right of it sits k× too far along.
+      const mid = box.left + ((boxes[i].left + boxes[i].right) / 2 - box.left) / k;
+      if (hits.some((r) => mid >= r.left && mid <= r.right)) out += span.text[i];
+    }
+    if (out.trim()) lines.push(out.trim());
+  }
+  return lines.length ? lines.join(' ') : null;
+}
+
+// Build the geometry model for every text-layer span a Range touches.
+export function collectPdfSelectionSpans(range, pageWrap) {
+  const out = [];
+  for (const span of pageWrap.querySelectorAll('.textLayer span')) {
+    const tn = span.firstChild;
+    if (!tn || tn.nodeType !== 3 || !tn.nodeValue || !range.intersectsNode(span)) continue;
+    const b = span.getBoundingClientRect();
+    // A rotated run's bounding box is not its width; leave it unjudged.
+    const rotated = /rotate\(/.test(span.style?.transform || '');
+    out.push({
+      text: tn.nodeValue,
+      box: { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height },
+      trueWidth: rotated ? 0 : parseFloat(span.dataset.w) || 0,
+      charBoxes() {
+        const r = document.createRange();
+        const boxes = [];
+        for (let i = 0; i < tn.length; i++) {
+          r.setStart(tn, i); r.setEnd(tn, i + 1);
+          const cb = r.getBoundingClientRect();
+          boxes.push({ left: cb.left, right: cb.right });
+        }
+        return boxes;
+      },
+    });
+  }
+  return out;
+}
+
 export async function renderPDFPages() {
   const container = document.getElementById('pdf-pages');
   container.innerHTML = '';
@@ -199,6 +284,10 @@ export async function renderPDFPages() {
     wrap.dataset.page = i;
     wrap.style.width  = vp.width  + 'px';
     wrap.style.height = vp.height + 'px';
+    // pdf.js 3.x sizes text-layer spans as calc(var(--scale-factor) * px);
+    // without this the spans render at the inherited font size and drift from
+    // the glyphs on the canvas (see pdfSelectionTextFromRects).
+    wrap.style.setProperty('--scale-factor', String(vp.scale));
 
     const canvas = document.createElement('canvas');
     canvas.className = 'pdf-canvas';
@@ -215,13 +304,20 @@ export async function renderPDFPages() {
       const pageStr = pdfTextItemsToString(tc.items);
       textChunks.push(`\n\n[Page ${i}]\n${pageStr}`);
       const layerContent = { ...tc, items: mergedItems.length ? mergedItems : tc.items };
+      const textDivs = [];
       const task = pdfjsLib.renderTextLayer({
         textContentSource: layerContent,
         container: txtLayer,
         viewport: vp,
-        textDivs: [],
+        textDivs,
       });
       await (task && task.promise ? task.promise : task);
+      // pdf.js pushes one span per item, in order. Record the width each span
+      // is meant to cover so the selection handler can detect a stretched layer.
+      textDivs.forEach((div, idx) => {
+        const it = layerContent.items[idx];
+        if (it?.width > 0 && div?.dataset) div.dataset.w = (it.width * vp.scale).toFixed(2);
+      });
     } catch(e) { console.warn('Text layer p.'+i, e); }
 
     wrap.appendChild(canvas); wrap.appendChild(hlLayer); wrap.appendChild(txtLayer);

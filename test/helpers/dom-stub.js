@@ -15,7 +15,12 @@ function makeEl(tag = 'div') {
   const el = {
     tagName: String(tag).toUpperCase(),
     nodeType: 1,
-    style: {},
+    // Custom properties (--foo) go through setProperty/getPropertyValue like
+    // a real CSSStyleDeclaration; plain props are assigned directly.
+    style: {
+      setProperty(k, v) { this[k] = String(v); },
+      getPropertyValue(k) { return k in this ? String(this[k]) : ''; },
+    },
     dataset: {},
     _attrs: {},
     children: [],
