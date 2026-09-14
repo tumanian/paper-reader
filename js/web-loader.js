@@ -7,14 +7,14 @@ import { findEquationAfter, rectsForElement, equationDisplayText, equationHighli
 import { maybeTrackTransformerPaperOpen } from './analytics.js';
 import {
   docMeta, paperText, paperRefText, paperReferences, bibByNumber, discussions, currentMode,
-  extractedReferences, MAX_PAPER_CHARS,
+  currentDocId, pdfDoc, extractedReferences, MAX_PAPER_CHARS,
   setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat,
   setBibByNumber, setPaperRefText, setPaperText, setPaperReferences,
   setActiveId, setPendingSel, setCitationFormatPromise, setExtractedReferences,
 } from './state.js';
 import { docIdFor, loadStore, restoreDiscussions, loadDocSummary, persistCurrentDoc } from './persistence.js';
 import { renderLibrary, updateAuthBar, updateLogoutFab } from './library.js';
-import { renderFromBuffer, restoreHighlightsForLoadedPages } from './pdf.js';
+import { renderFromBuffer, restoreHighlightsForLoadedPages, titleFromPdfDoc } from './pdf.js';
 import { extractReferencesSection, resolveReferenceEntry } from './citation-parse.js';
 
 // Cross-module deps still owned by main.js (chat / onboarding / citation
@@ -174,14 +174,140 @@ export function arxivPdfUrl(id) {
   return `https://arxiv.org/pdf/${id}.pdf`;
 }
 
-export async function fetchArxivTitle(id, signal) {
-  try {
-    const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`, { signal });
-    const xml = await r.text();
-    return decodeXmlText(xml.match(/<entry>[\s\S]*?<title>([^<]+)/)?.[1]) || `arXiv:${id}`;
-  } catch {
-    return `arXiv:${id}`;
+// ── arXiv paper titles ──────────────────────────────────────────────────
+// The name shown in the header and on library cards. Until the real title is
+// known the doc carries the placeholder "arXiv:<id>"; anything still carrying
+// it on reopen gets another resolution attempt (see maybeRefreshArxivTitle).
+
+export function arxivTitlePlaceholder(id) {
+  return `arXiv:${id}`;
+}
+
+export function isArxivTitlePlaceholder(name) {
+  return /^arXiv:\s*[\d.]+(?:v\d+)?$/i.test(String(name || '').trim());
+}
+
+export function arxivApiQueryUrl(id) {
+  return `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`;
+}
+
+// Pull the paper title out of an arXiv API (Atom) response. Only the first
+// <entry> counts — the feed-level <title> is "ArXiv Query: search_query=…".
+// Titles wrap across lines with indentation, carry entities (&amp;, &#39;),
+// and may be tagged (<title type="text">) or CDATA-wrapped. An unknown id
+// yields an error entry, not an empty feed. Returns null when no title.
+export function parseArxivTitle(xml) {
+  const s = String(xml || '');
+  const entry = s.match(/<entry\b[^>]*>([\s\S]*?)<\/entry>/i)?.[1]
+    ?? s.match(/<entry\b[^>]*>([\s\S]*)$/i)?.[1];
+  if (!entry) return null;
+  if (/<id>[^<]*api\/errors/i.test(entry)) return null;
+  const raw = entry.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  if (raw == null) return null;
+  const unwrapped = raw.replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, '$1');
+  const title = decodeXmlText(unwrapped);
+  if (!title || /^error$/i.test(title)) return null;
+  return title;
+}
+
+// arXiv asks for ≥ 3 s between API calls and answers bursts with 429.
+export const ARXIV_RATE_LIMIT_RETRY_MS = 3000;
+
+function sleepUnlessAborted(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener?.('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+}
+
+// Ask the arXiv API for the title. Goes through our /api/fetch proxy first —
+// export.arxiv.org sends no CORS headers, so a direct browser fetch always
+// fails — then straight at the API (works outside a browser). A 429 gets one
+// spaced retry. Resolves to the title, or null when every source fails; the
+// caller decides what to fall back to.
+export async function fetchArxivTitle(id, signal, { retryDelayMs = ARXIV_RATE_LIMIT_RETRY_MS } = {}) {
+  const apiUrl = arxivApiQueryUrl(id);
+  const sources = [
+    async () => {
+      const r = await fetch(`/api/fetch?url=${encodeURIComponent(apiUrl)}`, { signal });
+      const d = await r.json();
+      if (!r.ok || !d.html) throw new Error(d.error || `HTTP ${r.status}`);
+      return d.html;
+    },
+    async () => {
+      const r = await fetch(apiUrl, { signal });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.text();
+    },
+  ];
+  for (const source of sources) {
+    if (signal?.aborted) break;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const title = parseArxivTitle(await source());
+        if (title) return title;
+        break;
+      } catch (e) {
+        console.warn('arXiv title lookup failed:', e);
+        if (attempt > 0 || !/\b429\b/.test(e?.message || '') || signal?.aborted) break;
+        await sleepUnlessAborted(retryDelayMs, signal);
+        if (signal?.aborted) break;
+      }
+    }
   }
+  return null;
+}
+
+// Fallback chain for an arXiv paper's title: arXiv API → PDF metadata Title →
+// page-1 heading. `apiTitle` lets the loader hand in a lookup it already
+// started while the PDF was downloading; `pdf` defaults to the open document.
+// Resolves to a title or null (never the placeholder).
+export async function resolveArxivTitle(arxivId, { apiTitle, pdf, signal } = {}) {
+  const steps = [
+    () => (apiTitle !== undefined ? apiTitle : fetchArxivTitle(arxivId, signal)),
+    () => titleFromPdfDoc(pdf !== undefined ? pdf : pdfDoc),
+  ];
+  for (const step of steps) {
+    try {
+      const t = String((await step()) || '').replace(/\s+/g, ' ').trim();
+      if (t && !isArxivTitlePlaceholder(t)) return t;
+    } catch (e) {
+      console.warn('arXiv title step failed:', e);
+    }
+  }
+  return null;
+}
+
+// Resolve the title for the open arXiv doc and push it everywhere it shows:
+// docMeta, the header, the saved doc, the library card. Never throws — a
+// failed lookup just leaves the placeholder for the next reopen to retry.
+// Resolves to the adopted title, or null when nothing changed.
+export async function adoptArxivTitle(docId, arxivId, opts = {}) {
+  let title = null;
+  try { title = await resolveArxivTitle(arxivId, opts); } catch (e) { console.warn('arXiv title resolve failed:', e); }
+  if (!title) return null;
+  // The user may have opened another paper while we waited; the placeholder
+  // on that doc gets retried when it's reopened.
+  if (currentDocId !== docId) return null;
+  if (docMeta.name === title) return null;
+  docMeta.name = title;
+  document.getElementById('paper-name').textContent = title;
+  try { await persistCurrentDoc(); } catch (e) { console.warn('Title persist failed:', e); }
+  renderLibrary();
+  return title;
+}
+
+// Lazy retry: an arXiv doc reopened with a placeholder name (title lookup
+// failed when it was first loaded) gets another attempt now that the PDF is
+// on screen — so the PDF-based fallbacks are available too.
+export async function maybeRefreshArxivTitle(docId) {
+  if (currentDocId !== docId || docMeta.mode !== 'pdf') return null;
+  if (!isArxivTitlePlaceholder(docMeta.name)) return null;
+  const arxivId = parseArxivId(docMeta.url || '');
+  if (!arxivId) return null;
+  const signal = AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined;
+  return adoptArxivTitle(docId, arxivId, { signal });
 }
 
 export async function fetchPdfViaProxy(url) {
@@ -223,17 +349,20 @@ export async function loadArxivPdf(rawUrl, knownDocId, citationContext = null) {
   setCitationFormat(saved?.citationFormat || null);
   setExtractedReferences(saved?.references || null);
 
+  // A title we already know beats the placeholder while the lookup runs.
+  const placeholder = arxivTitlePlaceholder(arxivId);
+  const initialName = saved?.name && !isArxivTitlePlaceholder(saved.name) ? saved.name : placeholder;
+  setDocMeta({ name: initialName, mode: 'pdf', badge: 'PDF', url: absUrl });
+  document.getElementById('paper-name').textContent = initialName;
+
+  // Start the title lookup now so it overlaps the PDF download, but never let
+  // it gate the PDF: a slow/failed arXiv API must not delay or break the open.
   const titleSignal = AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined;
+  const apiTitle = fetchArxivTitle(arxivId, titleSignal);
 
   try {
     setStatus('Fetching arXiv PDF…');
-    const [buf, title] = await Promise.all([
-      fetchPdfViaProxy(pdfUrl),
-      fetchArxivTitle(arxivId, titleSignal),
-    ]);
-
-    setDocMeta({ name: title, mode: 'pdf', badge: 'PDF', url: absUrl });
-    document.getElementById('paper-name').textContent = title;
+    const buf = await fetchPdfViaProxy(pdfUrl);
 
     setStatus('Rendering PDF…');
     const pdfBlob = new Blob([buf.slice(0)], { type: 'application/pdf' });
@@ -245,7 +374,11 @@ export async function loadArxivPdf(rawUrl, knownDocId, citationContext = null) {
     _wlRenderList();
     await persistCurrentDoc();
     renderLibrary();
+    // With the PDF open the fallbacks (metadata, page-1 heading) are available
+    // too. Runs after the doc is usable; updates name/header/card when done.
+    const titleJob = adoptArxivTitle(id, arxivId, { apiTitle });
     if (citationContext) await _wlFinishCitationNavigation(citationContext);
+    await titleJob;
   } catch (err) {
     console.error(err);
     if (citationContext) throw err;

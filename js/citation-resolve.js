@@ -18,7 +18,7 @@ import {
   verifyFetchedPaperAgainstBib, sanitizeCitationFormat, buildFallbackCitationFormat, matchCitationToReferences,
   extractReferencesSection,
 } from './citation-parse.js';
-import { fetchViaProxy, arxivIdFromUrl, buildPaperReferences, expandSelectionText } from './web-loader.js';
+import { fetchViaProxy, arxivIdFromUrl, buildPaperReferences, expandSelectionText, parseArxivTitle } from './web-loader.js';
 
 // Cross-module dep still owned by main.js (chat) until extracted. `_cr`-prefixed
 // so the shared-scope test bundle doesn't collide with other modules.
@@ -524,7 +524,7 @@ export async function resolveCitationUrl(cite, signal) {
 async function fetchArxivAbstract(arxivId, signal) {
   const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(arxivId)}`, { signal });
   const xml = await r.text();
-  const title = decodeXmlText(xml.match(/<entry>[\s\S]*?<title>([^<]+)/)?.[1]);
+  const title = parseArxivTitle(xml) || '';
   const summary = decodeXmlText(xml.match(/<summary>([^<]+)/)?.[1]);
   if (!summary) throw new Error('No abstract found');
   return { title, text: summary };

@@ -16,11 +16,12 @@ let _parseArxivId = () => null;
 let _getFeaturedPaper = () => null;
 let _openFeaturedExample = () => {};
 let _backToUpload = () => {};
+let _maybeRefreshArxivTitle = async () => null;
 
 export function setLibraryHooks({
   loadWebPage, loadArxivPdf, startApp, setStatus, renderFromBuffer,
   restoreHighlightsForLoadedPages, renderList, showList, parseArxivId,
-  getFeaturedPaper, openFeaturedExample, backToUpload,
+  getFeaturedPaper, openFeaturedExample, backToUpload, maybeRefreshArxivTitle,
 } = {}) {
   if (loadWebPage) _loadWebPage = loadWebPage;
   if (loadArxivPdf) _loadArxivPdf = loadArxivPdf;
@@ -34,6 +35,7 @@ export function setLibraryHooks({
   if (getFeaturedPaper) _getFeaturedPaper = getFeaturedPaper;
   if (openFeaturedExample) _openFeaturedExample = openFeaturedExample;
   if (backToUpload) _backToUpload = backToUpload;
+  if (maybeRefreshArxivTitle) _maybeRefreshArxivTitle = maybeRefreshArxivTitle;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -197,6 +199,9 @@ export async function reopenDoc(docId) {
         await _renderFromBuffer(buf);
         _restoreHighlightsForLoadedPages();
         _renderList();
+        // An arXiv doc saved under its "arXiv:<id>" placeholder (title lookup
+        // failed on first open) gets another try now that the PDF is loaded.
+        await _maybeRefreshArxivTitle(docId);
         return;
       } catch(e) { console.warn('Stored PDF failed to render:', e); }
     }

@@ -175,6 +175,116 @@ export function pdfTextItemsToString(items) {
     .trim();
 }
 
+// ── Title recovery from the PDF itself ───────────────────────────────────
+// Used when the arXiv API can't tell us the paper's title. Two sources, in
+// order of trust: the document's metadata Title (often real, often a LaTeX
+// leftover like "main.dvi"), then the largest-font text block on page 1.
+
+const PDF_TITLE_MIN = 8;
+const PDF_TITLE_MAX = 300;
+
+function cleanPdfTitleCandidate(raw) {
+  const t = String(raw || '')
+    .replace(/\u00ad/g, '')   // soft hyphens from justified text
+    .replace(/\s+/g, ' ')
+    // Trailing footnote / affiliation markers ("Title∗", "Title 1,2").
+    .replace(/[\s*∗†‡§¶]+$/g, '')
+    .trim();
+  if (t.length < PDF_TITLE_MIN || t.length > PDF_TITLE_MAX) return null;
+  if (!/[A-Za-z]/.test(t)) return null;
+  if (!/\s/.test(t)) return null;                  // real titles have ≥ 2 words
+  if (/^arxiv:/i.test(t)) return null;             // the arXiv stamp
+  return t;
+}
+
+// Metadata Title from pdf.js `getMetadata()`: `info.Title` first, then the XMP
+// dc:title. Rejects the placeholders LaTeX/Word toolchains leave behind.
+export function titleFromPdfMetadata(info, metadata) {
+  const candidates = [];
+  if (info?.Title) candidates.push(info.Title);
+  try {
+    const dc = metadata?.get?.('dc:title');
+    if (dc) candidates.push(Array.isArray(dc) ? dc[0] : dc);
+  } catch (_) {}
+  for (const c of candidates) {
+    const t = cleanPdfTitleCandidate(c);
+    if (!t) continue;
+    if (/\.(dvi|tex|pdf|ps|docx?|md|txt)$/i.test(t)) continue;
+    if (/^microsoft word\b/i.test(t)) continue;
+    if (/^(untitled|main|paper|manuscript|draft|template|article|document)\b/i.test(t) && t.split(' ').length <= 2) continue;
+    return t;
+  }
+  return null;
+}
+
+// Largest-font text block on the first page. arXiv PDFs stamp
+// "arXiv:NNNN.NNNNNvN [cs.XX] D Mon YYYY" rotated along the left margin — that
+// run is excluded by rotation and by text.
+export function titleFromPdfTextItems(items) {
+  const lines = combinePdfTextItems(items || [])
+    .map((it) => ({
+      str: it.str.replace(/\s+/g, ' ').trim(),
+      size: pdfFontSize(it),
+      x: it.transform[4],
+      y: it.transform[5],
+      rotated: Math.abs(it.transform[1]) > Math.abs(it.transform[0]),
+    }))
+    .filter((l) => l.str.length >= 2 && !l.rotated && /[A-Za-z]/.test(l.str) && !/^arXiv:\d/i.test(l.str));
+  if (!lines.length) return null;
+
+  const sizes = lines.map((l) => l.size).sort((a, b) => a - b);
+  const maxSize = sizes[sizes.length - 1];
+  const median = sizes[Math.floor(sizes.length / 2)];
+  // A heading has to stand out from body text; a uniformly-sized page (scans,
+  // missing font metrics) has no heading we can trust.
+  if (maxSize < median * 1.15) return null;
+
+  const big = lines
+    .filter((l) => l.size >= maxSize * 0.94)
+    .sort((a, b) => b.y - a.y || a.x - b.x);
+
+  // Title lines wrap tightly; a big-font line further down (a section head,
+  // a banner) is a different block. Keep only the first vertical cluster.
+  const cluster = [big[0]];
+  for (let i = 1; i < big.length; i++) {
+    const prev = cluster[cluster.length - 1];
+    if (prev.y - big[i].y > big[i].size * 2.2) break;
+    cluster.push(big[i]);
+  }
+
+  // The title sits in the upper part of the page.
+  const ys = lines.map((l) => l.y);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  if (maxY > minY && cluster[0].y < minY + (maxY - minY) * 0.45) return null;
+
+  let text = '';
+  for (const l of cluster) {
+    if (!text) text = l.str;
+    else if (/[A-Za-z]-$/.test(text)) text = text.slice(0, -1) + l.str;
+    else text += ' ' + l.str;
+  }
+  return cleanPdfTitleCandidate(text);
+}
+
+// Fallback chain over a loaded pdf.js document: metadata, then page-1 heading.
+export async function titleFromPdfDoc(doc) {
+  if (!doc) return null;
+  try {
+    const meta = await doc.getMetadata?.();
+    const t = titleFromPdfMetadata(meta?.info, meta?.metadata);
+    if (t) return t;
+  } catch (e) { console.warn('PDF metadata title failed:', e); }
+  try {
+    const page = await doc.getPage(1);
+    const tc = await page.getTextContent();
+    return titleFromPdfTextItems(tc.items);
+  } catch (e) {
+    console.warn('PDF heading title failed:', e);
+    return null;
+  }
+}
+
 export function normalizePdfSelectionText(text) {
   const t = sanitizePdfString(text).replace(/\s+/g, ' ').trim();
   if (!t) return t;

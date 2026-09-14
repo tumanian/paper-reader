@@ -72,9 +72,28 @@ export function resolveMediaUrl(src, baseUrl) {
 
   return url.href;
 }
+// Decode XML character references without touching the DOM: the five XML
+// predefined entities plus numeric (&#NN; / &#xHH;) references. Unknown named
+// entities are left verbatim rather than guessed at. Pure so it can run in the
+// test harness and in workers.
+const XML_NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+export function decodeXmlEntities(s) {
+  if (!s) return '';
+  return String(s).replace(/&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|([a-z]+));/gi, (m, hex, dec, name) => {
+    if (hex || dec) {
+      const cp = hex ? parseInt(hex, 16) : parseInt(dec, 10);
+      if (!Number.isFinite(cp) || cp <= 0 || cp > 0x10ffff) return m;
+      try { return String.fromCodePoint(cp); } catch (_) { return m; }
+    }
+    const v = XML_NAMED_ENTITIES[name.toLowerCase()];
+    return v !== undefined ? v : m;
+  });
+}
+
+// Decode an XML text node into a single-line string: entities resolved and
+// runs of whitespace (including the newline+indent an Atom feed wraps long
+// titles with) collapsed to one space.
 export function decodeXmlText(s) {
   if (!s) return '';
-  const el = document.createElement('textarea');
-  el.innerHTML = s.replace(/\s+/g, ' ').trim();
-  return el.value;
+  return decodeXmlEntities(s).replace(/\s+/g, ' ').trim();
 }
