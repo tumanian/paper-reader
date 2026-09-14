@@ -318,8 +318,21 @@ window.PaperStore = (function () {
       conversation_summary: doc.conversationSummary || null,
       summary_message_count: doc.summaryMessageCount || 0,
       citation_format: doc.citationFormat || null,
+      // Paper-level blurb for the library card (see supabase/migrate-description.sql).
+      ...(descriptionColumnMissing ? {} : { description: doc.description || null }),
       updated_at: new Date(doc.updated || Date.now()).toISOString(),
     };
+  }
+
+  // Deploy-order guard: if this build ships before the `description` column
+  // migration has run, PostgREST rejects the whole upsert (PGRST204, "Could not
+  // find the 'description' column"). Drop the field for the rest of the
+  // session rather than failing every save — the blurb is re-derived on the
+  // next open, so nothing is lost.
+  let descriptionColumnMissing = false;
+  function isMissingDescriptionColumn(err) {
+    return !!err && /\bdescription\b/i.test(String(err.message || '')) &&
+      (err.code === 'PGRST204' || /could not find|schema cache|does not exist/i.test(String(err.message || '')));
   }
 
   function rowToDoc(row, discussions) {
@@ -333,6 +346,7 @@ window.PaperStore = (function () {
       conversationSummary: row.conversation_summary,
       summaryMessageCount: row.summary_message_count || 0,
       citationFormat: row.citation_format || null,
+      description: row.description || null,
       discussions: discussions || [],
     };
   }
@@ -430,9 +444,16 @@ window.PaperStore = (function () {
     // wipe a peer's newer message (that was the history-loss bug). Deletions are
     // separate, monotonic tombstones (see deleteDiscussion). Composite PK
     // (owner_email, id) keeps rows unique per user.
-    const { error: docErr } = await supabase
+    let { error: docErr } = await supabase
       .from('documents')
       .upsert(docToRow(doc), { onConflict: 'owner_email,id' });
+    if (docErr && !descriptionColumnMissing && isMissingDescriptionColumn(docErr)) {
+      console.warn('documents.description column missing — run supabase/migrate-description.sql; saving without it.');
+      descriptionColumnMissing = true;
+      ({ error: docErr } = await supabase
+        .from('documents')
+        .upsert(docToRow(doc), { onConflict: 'owner_email,id' }));
+    }
     if (docErr) throw docErr;
 
     for (const d of doc.discussions || []) {

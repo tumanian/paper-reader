@@ -1,6 +1,7 @@
-import { discussions, pdfDoc, paperText, MAX_PAPER_CHARS, setPdfDoc, setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat, setExtractedReferences, setPaperText, setPaperRefText } from './state.js';
+import { discussions, pdfDoc, paperText, docMeta, MAX_PAPER_CHARS, setPdfDoc, setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat, setExtractedReferences, setPaperText, setPaperRefText } from './state.js';
 import { docIdFor, loadStore, restoreDiscussions, loadDocSummary, persistCurrentDoc } from './persistence.js';
 import { renderLibrary, updateAuthBar } from './library.js';
+import { abstractFromText } from './util.js';
 
 // Cross-module deps still owned by main.js (web-loader / chat / citation /
 // references) until those modules are extracted. Wired via setPdfHooks().
@@ -51,11 +52,10 @@ export async function loadPDF(file) {
   const id = docIdFor('pdf', name + ':' + file.size);
   _pdfStartApp(name, 'PDF');
   setCurrentMode('pdf'); setCurrentDocId(id);
-  setDocMeta({ name, mode:'pdf', badge:'PDF', url:null });
-
   // restore prior discussions for this doc, if any
   const store = loadStore();
   const saved = store[id];
+  setDocMeta({ name, mode:'pdf', badge:'PDF', url:null, description: saved?.description || null });
   replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
   setCitationFormat(saved?.citationFormat || null);
@@ -436,6 +436,10 @@ export async function renderPDFPages() {
   }
   setPaperText(textChunks.join('').slice(0, MAX_PAPER_CHARS));
   setPaperRefText(_pdfExtractReferencesSection(paperText));
+  // Library-card blurb for PDFs with no other source (uploaded files; arXiv
+  // while its API is unreachable): the abstract from the page text. Never
+  // replaces a description the doc already has.
+  if (!docMeta.description) docMeta.description = abstractFromText(paperText);
   _pdfBuildPaperReferences();
   void _pdfEnsureCitationFormat();
 }

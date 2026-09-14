@@ -1,4 +1,4 @@
-import { esc, timeAgo, simpleHash } from './util.js';
+import { esc, timeAgo, simpleHash, cleanDescription, looksLikeChatReply } from './util.js';
 import { summaryDirty, setCurrentMode, setCurrentDocId, setDocMeta, replaceDiscussions, setCitationFormat, setExtractedReferences } from './state.js';
 import { loadStore, restoreDiscussions, loadDocSummary, persistCurrentDoc, maybeUpdateSummary } from './persistence.js';
 
@@ -16,12 +16,12 @@ let _parseArxivId = () => null;
 let _getFeaturedPaper = () => null;
 let _openFeaturedExample = () => {};
 let _backToUpload = () => {};
-let _maybeRefreshArxivTitle = async () => null;
+let _maybeRefreshArxivMeta = async () => null;
 
 export function setLibraryHooks({
   loadWebPage, loadArxivPdf, startApp, setStatus, renderFromBuffer,
   restoreHighlightsForLoadedPages, renderList, showList, parseArxivId,
-  getFeaturedPaper, openFeaturedExample, backToUpload, maybeRefreshArxivTitle,
+  getFeaturedPaper, openFeaturedExample, backToUpload, maybeRefreshArxivMeta,
 } = {}) {
   if (loadWebPage) _loadWebPage = loadWebPage;
   if (loadArxivPdf) _loadArxivPdf = loadArxivPdf;
@@ -35,12 +35,40 @@ export function setLibraryHooks({
   if (getFeaturedPaper) _getFeaturedPaper = getFeaturedPaper;
   if (openFeaturedExample) _openFeaturedExample = openFeaturedExample;
   if (backToUpload) _backToUpload = backToUpload;
-  if (maybeRefreshArxivTitle) _maybeRefreshArxivTitle = maybeRefreshArxivTitle;
+  if (maybeRefreshArxivMeta) _maybeRefreshArxivMeta = maybeRefreshArxivMeta;
 }
 
 // ═══════════════════════════════════════════════════════
 //  LIBRARY  (upload screen)
 // ═══════════════════════════════════════════════════════
+
+// A conversation is worth summarising on the card once the researcher has
+// actually asked something and got an answer: at least one visible user +
+// assistant pair in some discussion. Bare highlights, seeded onboarding
+// notes, and unanswered questions don't count.
+export function hasSubstantiveDiscussion(doc) {
+  for (const d of doc?.discussions || []) {
+    const vis = (d?.messages || []).filter(m => m && !m.hidden && String(m.content || '').trim());
+    if (vis.some(m => m.role === 'user') && vis.some(m => m.role === 'assistant')) return true;
+  }
+  return false;
+}
+
+// What a library card says under the paper's name. `description` is the
+// paper-level one-liner (arXiv summary / abstract / page excerpt) and is
+// always preferred; `discussion` is the conversation summary, shown only
+// when there is a real exchange behind it and the text describes it rather
+// than replying to it. Either may be null.
+export function libraryCardText(doc) {
+  const description = cleanDescription(doc?.description);
+  let discussion = null;
+  if (hasSubstantiveDiscussion(doc)) {
+    const s = cleanDescription(doc?.conversationSummary);
+    if (s && !looksLikeChatReply(s)) discussion = s;
+  }
+  return { description, discussion };
+}
+
 export function renderLibrary() {
   const store = loadStore();
   const docs = Object.values(store).sort((a,b) => b.updated - a.updated);
@@ -77,13 +105,15 @@ export function renderLibrary() {
   for (const doc of docs) {
     const n = doc.discussions.length;
     const isFeatured = !!(featUrl && normUrl(doc.url) === featUrl);
+    const { description, discussion } = libraryCardText(doc);
     const card = document.createElement('div');
     card.className = 'lib-card' + (isFeatured ? ' lib-featured' : '');
     card.innerHTML = `
       <div class="lib-icon">${doc.mode === 'pdf' ? '📄' : '🌐'}</div>
       <div class="lib-info">
         <div class="lib-name">${esc(doc.name)}${isFeatured ? '<span class="lib-spark" title="Annotated example">✨</span>' : ''}</div>
-        ${doc.conversationSummary ? `<div class="lib-summary">${esc(doc.conversationSummary)}</div>` : ''}
+        ${description ? `<div class="lib-summary" title="${esc(description)}">${esc(description)}</div>` : ''}
+        ${discussion ? `<div class="lib-summary lib-discussed" title="${esc(discussion)}">💬 ${esc(discussion)}</div>` : ''}
         <div class="lib-meta">${n} discussion${n!==1?'s':''} · ${timeAgo(doc.updated)}</div>
       </div>
       <button class="lib-del" title="Delete">×</button>`;
@@ -184,7 +214,7 @@ export async function reopenDoc(docId) {
   _startApp(doc.name, doc.badge || 'PDF');
   setCurrentMode(doc.mode);
   setCurrentDocId(docId);
-  setDocMeta({ name:doc.name, mode:doc.mode, badge:doc.badge, url:doc.url });
+  setDocMeta({ name:doc.name, mode:doc.mode, badge:doc.badge, url:doc.url, description: doc.description || null });
   replaceDiscussions(restoreDiscussions(doc.discussions));
   loadDocSummary(doc);
   setCitationFormat(doc.citationFormat || null);
@@ -200,8 +230,9 @@ export async function reopenDoc(docId) {
         _restoreHighlightsForLoadedPages();
         _renderList();
         // An arXiv doc saved under its "arXiv:<id>" placeholder (title lookup
-        // failed on first open) gets another try now that the PDF is loaded.
-        await _maybeRefreshArxivTitle(docId);
+        // failed on first open), or without a card description, gets another
+        // try now that the PDF is loaded.
+        await _maybeRefreshArxivMeta(docId);
         return;
       } catch(e) { console.warn('Stored PDF failed to render:', e); }
     }

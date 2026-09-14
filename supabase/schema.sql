@@ -18,6 +18,7 @@ create table if not exists documents (
   conversation_summary  text,
   summary_message_count int not null default 0,
   citation_format       jsonb,
+  description           text,
   updated_at            timestamptz not null default now(),
   created_at            timestamptz not null default now()
 );

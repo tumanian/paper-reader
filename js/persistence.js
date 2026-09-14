@@ -1,5 +1,5 @@
 import { chatFetch } from './api.js';
-import { simpleHash } from './util.js';
+import { simpleHash, looksLikeChatReply } from './util.js';
 import {
   discussions, currentDocId, docMeta, conversationSummary, summaryMessageCount, summaryDirty, citationFormat,
   extractedReferences,
@@ -189,6 +189,7 @@ export async function persistCurrentDoc() {
     mode: docMeta.mode,
     badge: docMeta.badge,
     url: docMeta.url || null,
+    description: docMeta.description || null,
     updated: Date.now(),
     conversationSummary,
     summaryMessageCount,
@@ -287,7 +288,15 @@ export async function maybeUpdateSummary(force = false) {
   _summaryInFlight = true;
   try {
     const summary = await callSummarize(source);
-    setConversationSummary(summary);
+    // The model occasionally answers the transcript instead of describing it
+    // ("It looks like your message got cut off…"). That is not a summary:
+    // keep whatever we had, but count these messages as covered so the same
+    // transcript isn't re-sent on every timer tick.
+    if (looksLikeChatReply(summary)) {
+      console.warn('Conversation summary discarded (reads like a chat reply):', summary.slice(0, 120));
+    } else {
+      setConversationSummary(summary);
+    }
     setSummaryMessageCount(count);
     setSummaryDirty(false);
     await persistCurrentDoc();

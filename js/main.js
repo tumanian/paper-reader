@@ -3,7 +3,7 @@ import { setPdfDoc, setActiveId, setPendingSel, setCurrentDocId, setCurrentMode,
 import { renderLibrary, renderReadLater, updateAuthBar, updateLogoutFab, initLibrary, setLibraryHooks } from './library.js';
 import { initPdf, setPdfHooks, renderFromBuffer, restoreHighlightsForLoadedPages } from './pdf.js';
 import { extractReferencesSection } from './citation-parse.js';
-import { initWebLoader, setWebLoaderHooks, loadWebPage, loadArxivPdf, startApp, setStatus, showViewer, parseArxivId, buildPaperReferences, maybeRefreshArxivTitle } from './web-loader.js';
+import { initWebLoader, setWebLoaderHooks, loadWebPage, loadArxivPdf, startApp, setStatus, showViewer, parseArxivId, buildPaperReferences, maybeRefreshArxivMeta } from './web-loader.js';
 import { setCitationResolveHooks, logCitation, ensureCitationFormat } from './citation-resolve.js';
 import { initSelection, setSelectionHooks, updateReturnButton, finishCitationNavigation, repositionPopover } from './selection.js';
 import { initFigure, setFigureHooks } from './figure.js';
@@ -85,7 +85,7 @@ setLibraryHooks({
   getFeaturedPaper,
   openFeaturedExample,
   backToUpload,
-  maybeRefreshArxivTitle,
+  maybeRefreshArxivMeta,
 });
 
 setPdfHooks({

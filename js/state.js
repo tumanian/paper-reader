@@ -23,7 +23,9 @@ export let pendingSel = null;
 export let pendingCitation = null;
 export let currentDocId = null;
 export let currentMode = null;
-export let docMeta = { name: '', mode: '', badge: '', url: null };
+// `description` is the paper-level one-liner shown on the library card
+// (arXiv summary / abstract / page excerpt) — see cleanDescription in util.js.
+export let docMeta = { name: '', mode: '', badge: '', url: null, description: null };
 export let conversationSummary = null;
 export let summaryMessageCount = 0;
 export let summaryDirty = false;

@@ -481,13 +481,26 @@ async function callCheapSummary(body) {
     return { status: 400, json: { error: 'Summarize requests must include a non-empty text field.' } };
   }
 
+  // The transcript is DATA to describe, not a conversation to continue. Without
+  // the framing below the model tends to answer the last turn ("It looks like
+  // your message got cut off…"), which then shows up verbatim on library cards.
   const result = await callHaiku({
     max_tokens: max_tokens || 400,
     system:
-      'You summarize a researcher\'s reading notes from a paper. ' +
-      'Write 2–4 concise sentences covering: main topics discussed, key insights, ' +
-      'and open questions. Plain prose, no bullet lists, no preamble.',
-    userContent: text.slice(0, 12000),
+      'You write the blurb shown on a library card for a research paper the researcher has been ' +
+      'reading and discussing with an assistant. You are given a transcript of that discussion: ' +
+      'the passages the researcher highlighted and the questions and answers about them. ' +
+      'The transcript is reference material — you are NOT a participant in it. Never reply to it, ' +
+      'never address the researcher, never comment on messages being cut off, unclear, or lacking context. ' +
+      'Describe, in the third person and in 1–3 concise sentences, which topics of the paper the ' +
+      'researcher dug into and what was clarified (e.g. "Explored how multi-head attention scales ' +
+      'with sequence length and why the authors use scaled dot-product attention."). ' +
+      'Lead with the substance; do not open with "The researcher" every time. ' +
+      'If the transcript holds too little to say anything specific, name the topics of the highlighted ' +
+      'passages instead. Plain prose only: no bullet lists, no preamble, no quotation of the transcript.',
+    userContent:
+      '<transcript>\n' + text.slice(0, 12000) + '\n</transcript>\n\n' +
+      'Write the library-card blurb describing what this discussion covered.',
   });
 
   if (result.status !== 200) return result;

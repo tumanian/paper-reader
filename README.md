@@ -21,6 +21,8 @@ powers highlight chat and citation fallbacks.
 
 1. Create a project at [supabase.com](https://supabase.com)
 2. **SQL Editor** → run the contents of `supabase/schema.sql`
+   (existing projects: also run `supabase/migrate-description.sql` so library
+   cards sync their paper blurb — until then the client saves without it)
 3. **Storage** → create a private bucket named `pdfs`
 4. **Authentication** → enable the Google provider and configure redirect URLs
    (full walkthrough incl. Google Cloud Console setup: `docs/AUTH_SETUP.md`)

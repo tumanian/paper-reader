@@ -1,7 +1,7 @@
 // Web page + arXiv loading, article rendering, and reference/bibliography
 // extraction. Depends on the pure citation core for reference resolution.
 
-import { esc, decodeXmlText, resolveMediaUrl, normalizeForMatch } from './util.js';
+import { esc, decodeXmlText, resolveMediaUrl, normalizeForMatch, cleanDescription, abstractFromText } from './util.js';
 import { sanitizeHtml } from './sanitize.js';
 import { findEquationAfter, rectsForElement, equationDisplayText, equationHighlightId, elementById } from './equation-highlight.js';
 import { maybeTrackTransformerPaperOpen } from './analytics.js';
@@ -91,10 +91,10 @@ export async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
   const id = knownDocId || docIdFor('web', url);
   startApp(hostname, 'Web');
   setCurrentMode('web'); setCurrentDocId(id);
-  setDocMeta({ name:hostname, mode:'web', badge:'Web', url });
 
   const store = loadStore();
   const saved = store[id];
+  setDocMeta({ name:hostname, mode:'web', badge:'Web', url, description: saved?.description || null });
   replaceDiscussions(saved ? restoreDiscussions(saved.discussions) : []);
   loadDocSummary(saved);
   setCitationFormat(saved?.citationFormat || null);
@@ -114,11 +114,11 @@ export async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
     indexBibliographyFromDoc(doc);
     setPaperRefText(extractReferencesSectionFromDoc(doc));
 
-    let title = '', content = '';
+    let title = '', content = '', excerpt = '';
     if (typeof Readability !== 'undefined') {
       try {
         const art = new Readability(doc).parse();
-        if (art && art.content) { title = art.title; content = art.content; }
+        if (art && art.content) { title = art.title; content = art.content; excerpt = art.excerpt || ''; }
       } catch(e) { console.warn('Readability failed', e); }
     }
     if (!content) {
@@ -131,6 +131,8 @@ export async function loadWebPage(rawUrl, knownDocId, citationContext = null) {
 
     docMeta.name = title || hostname;
     renderWebArticle(title, content, url);
+    // renderWebArticle set paperText, so the page's own abstract is available.
+    docMeta.description = descriptionFromWebDoc(doc, { excerpt, text: paperText }) || docMeta.description;
     showViewer('web');
     restoreWebHighlights();
     _wlRenderList();
@@ -191,23 +193,33 @@ export function arxivApiQueryUrl(id) {
   return `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`;
 }
 
-// Pull the paper title out of an arXiv API (Atom) response. Only the first
-// <entry> counts — the feed-level <title> is "ArXiv Query: search_query=…".
-// Titles wrap across lines with indentation, carry entities (&amp;, &#39;),
-// and may be tagged (<title type="text">) or CDATA-wrapped. An unknown id
-// yields an error entry, not an empty feed. Returns null when no title.
-export function parseArxivTitle(xml) {
+// Pull the paper's title and abstract (<summary>) out of an arXiv API (Atom)
+// response. Only the first <entry> counts — the feed-level <title> is "ArXiv
+// Query: search_query=…". Text wraps across lines with indentation, carries
+// entities (&amp;, &#39;), and may be tagged (<title type="text">) or
+// CDATA-wrapped. An unknown id yields an error entry, not an empty feed.
+// Returns { title, summary } (either may be null), or null when there is no
+// usable entry at all.
+export function parseArxivEntry(xml) {
   const s = String(xml || '');
   const entry = s.match(/<entry\b[^>]*>([\s\S]*?)<\/entry>/i)?.[1]
     ?? s.match(/<entry\b[^>]*>([\s\S]*)$/i)?.[1];
   if (!entry) return null;
   if (/<id>[^<]*api\/errors/i.test(entry)) return null;
-  const raw = entry.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1];
-  if (raw == null) return null;
-  const unwrapped = raw.replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, '$1');
-  const title = decodeXmlText(unwrapped);
-  if (!title || /^error$/i.test(title)) return null;
-  return title;
+  const field = (tag) => {
+    const raw = entry.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'))?.[1];
+    if (raw == null) return null;
+    return decodeXmlText(raw.replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, '$1')) || null;
+  };
+  const title = field('title');
+  return {
+    title: title && !/^error$/i.test(title) ? title : null,
+    summary: cleanDescription(field('summary')),
+  };
+}
+
+export function parseArxivTitle(xml) {
+  return parseArxivEntry(xml)?.title ?? null;
 }
 
 // arXiv asks for ≥ 3 s between API calls and answers bursts with 429.
@@ -221,12 +233,13 @@ function sleepUnlessAborted(ms, signal) {
   });
 }
 
-// Ask the arXiv API for the title. Goes through our /api/fetch proxy first —
-// export.arxiv.org sends no CORS headers, so a direct browser fetch always
-// fails — then straight at the API (works outside a browser). A 429 gets one
-// spaced retry. Resolves to the title, or null when every source fails; the
-// caller decides what to fall back to.
-export async function fetchArxivTitle(id, signal, { retryDelayMs = ARXIV_RATE_LIMIT_RETRY_MS } = {}) {
+// Ask the arXiv API for the paper's entry ({ title, summary }). Goes through
+// our /api/fetch proxy first — export.arxiv.org sends no CORS headers, so a
+// direct browser fetch always fails — then straight at the API (works outside
+// a browser). A 429 gets one spaced retry. Resolves to the entry once a source
+// yields a title, or null when every source fails; the caller decides what to
+// fall back to.
+export async function fetchArxivEntry(id, signal, { retryDelayMs = ARXIV_RATE_LIMIT_RETRY_MS } = {}) {
   const apiUrl = arxivApiQueryUrl(id);
   const sources = [
     async () => {
@@ -245,8 +258,8 @@ export async function fetchArxivTitle(id, signal, { retryDelayMs = ARXIV_RATE_LI
     if (signal?.aborted) break;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const title = parseArxivTitle(await source());
-        if (title) return title;
+        const entry = parseArxivEntry(await source());
+        if (entry?.title) return entry;
         break;
       } catch (e) {
         console.warn('arXiv title lookup failed:', e);
@@ -257,6 +270,11 @@ export async function fetchArxivTitle(id, signal, { retryDelayMs = ARXIV_RATE_LI
     }
   }
   return null;
+}
+
+// Title-only view of fetchArxivEntry (same sources, retry, and null-on-failure).
+export async function fetchArxivTitle(id, signal, opts) {
+  return (await fetchArxivEntry(id, signal, opts))?.title ?? null;
 }
 
 // Fallback chain for an arXiv paper's title: arXiv API → PDF metadata Title →
@@ -298,6 +316,41 @@ export async function adoptArxivTitle(docId, arxivId, opts = {}) {
   return title;
 }
 
+// Set the open doc's paper-level description (library card blurb). Only for
+// the doc the caller resolved it for, and only when it actually changes.
+// Does not persist — callers batch that with whatever else they adopted.
+// Returns true when docMeta changed.
+export function adoptPaperDescription(docId, description) {
+  const d = cleanDescription(description);
+  if (!d || currentDocId !== docId || docMeta.description === d) return false;
+  docMeta.description = d;
+  return true;
+}
+
+// Title AND abstract from one arXiv API round-trip. `apiEntry` lets the
+// loader hand in a lookup it already started; otherwise the entry is fetched
+// here. The title goes through adoptArxivTitle's fallback chain (the API
+// answer first, then the PDF); the abstract falls back to the "Abstract"
+// section of the extracted page text. Resolves to the adopted title (null
+// when the name didn't change), like adoptArxivTitle.
+export async function adoptArxivMeta(docId, arxivId, { apiEntry, pdf, signal } = {}) {
+  let entry = null;
+  try {
+    entry = await (apiEntry !== undefined ? apiEntry : fetchArxivEntry(arxivId, signal));
+  } catch (e) { console.warn('arXiv entry lookup failed:', e); }
+
+  const description = entry?.summary || (currentDocId === docId ? abstractFromText(paperText) : null);
+  const descChanged = adoptPaperDescription(docId, description);
+  // adoptArxivTitle persists + re-renders the card when the name changes, and
+  // picks up the description set just above in the same save.
+  const title = await adoptArxivTitle(docId, arxivId, { apiTitle: Promise.resolve(entry?.title ?? null), pdf, signal });
+  if (descChanged && !title && currentDocId === docId) {
+    try { await persistCurrentDoc(); } catch (e) { console.warn('Description persist failed:', e); }
+    renderLibrary();
+  }
+  return title;
+}
+
 // Lazy retry: an arXiv doc reopened with a placeholder name (title lookup
 // failed when it was first loaded) gets another attempt now that the PDF is
 // on screen — so the PDF-based fallbacks are available too.
@@ -307,7 +360,30 @@ export async function maybeRefreshArxivTitle(docId) {
   const arxivId = parseArxivId(docMeta.url || '');
   if (!arxivId) return null;
   const signal = AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined;
-  return adoptArxivTitle(docId, arxivId, { signal });
+  return adoptArxivMeta(docId, arxivId, { signal });
+}
+
+// Reopen-time refresh of everything the library card shows for an arXiv doc:
+// the title when it's still the placeholder (see above), else just the
+// description when it's missing (docs saved before descriptions existed).
+// A real title is never replaced here — the API is only consulted for the
+// abstract, and the extracted page text serves when the API is unreachable.
+export async function maybeRefreshArxivMeta(docId) {
+  if (currentDocId !== docId || docMeta.mode !== 'pdf') return null;
+  if (isArxivTitlePlaceholder(docMeta.name)) return maybeRefreshArxivTitle(docId);
+  if (docMeta.description) return null;
+  const arxivId = parseArxivId(docMeta.url || '');
+  if (!arxivId) return null;
+  let entry = null;
+  try {
+    const signal = AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined;
+    entry = await fetchArxivEntry(arxivId, signal);
+  } catch (e) { console.warn('arXiv entry lookup failed:', e); }
+  if (adoptPaperDescription(docId, entry?.summary || abstractFromText(paperText))) {
+    try { await persistCurrentDoc(); } catch (e) { console.warn('Description persist failed:', e); }
+    renderLibrary();
+  }
+  return null;
 }
 
 export async function fetchPdfViaProxy(url) {
@@ -352,13 +428,14 @@ export async function loadArxivPdf(rawUrl, knownDocId, citationContext = null) {
   // A title we already know beats the placeholder while the lookup runs.
   const placeholder = arxivTitlePlaceholder(arxivId);
   const initialName = saved?.name && !isArxivTitlePlaceholder(saved.name) ? saved.name : placeholder;
-  setDocMeta({ name: initialName, mode: 'pdf', badge: 'PDF', url: absUrl });
+  setDocMeta({ name: initialName, mode: 'pdf', badge: 'PDF', url: absUrl, description: saved?.description || null });
   document.getElementById('paper-name').textContent = initialName;
 
-  // Start the title lookup now so it overlaps the PDF download, but never let
-  // it gate the PDF: a slow/failed arXiv API must not delay or break the open.
+  // Start the title/abstract lookup now so it overlaps the PDF download, but
+  // never let it gate the PDF: a slow/failed arXiv API must not delay or break
+  // the open.
   const titleSignal = AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined;
-  const apiTitle = fetchArxivTitle(arxivId, titleSignal);
+  const apiEntry = fetchArxivEntry(arxivId, titleSignal);
 
   try {
     setStatus('Fetching arXiv PDF…');
@@ -374,9 +451,10 @@ export async function loadArxivPdf(rawUrl, knownDocId, citationContext = null) {
     _wlRenderList();
     await persistCurrentDoc();
     renderLibrary();
-    // With the PDF open the fallbacks (metadata, page-1 heading) are available
-    // too. Runs after the doc is usable; updates name/header/card when done.
-    const titleJob = adoptArxivTitle(id, arxivId, { apiTitle });
+    // With the PDF open the fallbacks (metadata, page-1 heading, the abstract
+    // in the page text) are available too. Runs after the doc is usable;
+    // updates name/header/card when done.
+    const titleJob = adoptArxivMeta(id, arxivId, { apiEntry });
     if (citationContext) await _wlFinishCitationNavigation(citationContext);
     await titleJob;
   } catch (err) {
@@ -414,6 +492,29 @@ export async function fetchViaProxy(url) {
     try { return await proxy(); } catch (e) { lastErr = e; console.warn('Fetch proxy failed:', e); }
   }
   throw new Error(lastErr?.message || 'All proxies failed. The site may block external fetching.');
+}
+
+// Paper-level blurb for a web article, best source first: an explicit
+// abstract meta tag (publisher pages), the "Abstract" section of the article
+// text, then Readability's excerpt (meta description or first paragraph) and
+// the social-card description. `doc` is the parsed source page.
+export function descriptionFromWebDoc(doc, { excerpt = '', text = '' } = {}) {
+  const meta = (sel) => {
+    try { return doc?.querySelector?.(sel)?.getAttribute?.('content') || ''; } catch (_) { return ''; }
+  };
+  const candidates = [
+    meta('meta[name="citation_abstract"]'),
+    meta('meta[name="dc.description" i]'),
+    abstractFromText(text),
+    excerpt,
+    meta('meta[property="og:description"]'),
+    meta('meta[name="description"]'),
+  ];
+  for (const c of candidates) {
+    const d = cleanDescription(c);
+    if (d && d.length >= 40) return d;
+  }
+  return null;
 }
 
 export function renderWebArticle(title, html, url) {
