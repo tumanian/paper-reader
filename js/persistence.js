@@ -186,7 +186,11 @@ export async function persistCurrentDoc() {
   const doc = {
     id: currentDocId,
     name: docMeta.name,
-    mode: docMeta.mode,
+    // documents.mode is CHECK (mode IN ('pdf','web')); never persist the empty
+    // default — fall back to the id prefix (web::… → web, else pdf).
+    mode: (docMeta.mode === 'pdf' || docMeta.mode === 'web')
+      ? docMeta.mode
+      : (String(currentDocId).startsWith('web::') ? 'web' : 'pdf'),
     badge: docMeta.badge,
     url: docMeta.url || null,
     updated: Date.now(),

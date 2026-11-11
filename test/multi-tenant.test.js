@@ -77,6 +77,15 @@ test('documents upsert resolves conflicts on the composite key (owner_email,id)'
   assert.equal(docUpsert.options?.onConflict, 'owner_email,id');
 });
 
+test('documents.mode is coerced into the pdf/web enum (never the empty default)', async () => {
+  await signedInAs(USER_A);
+  await PaperStore.saveDoc({ id: 'web::x', name: 'X', mode: '', badge: 'Web', url: 'http://x', updated: 1, discussions: [] });
+  await PaperStore.saveDoc({ id: 'pdf::y', name: 'Y', mode: undefined, badge: 'PDF', url: null, updated: 1, discussions: [] });
+  const ups = upsertsFor('documents');
+  assert.equal(ups.find((u) => u.rows.id === 'web::x').rows.mode, 'web');
+  assert.equal(ups.find((u) => u.rows.id === 'pdf::y').rows.mode, 'pdf');
+});
+
 test('discussions upsert carries owner_email + document_id and the composite conflict target', async () => {
   await signedInAs(USER_A);
   await PaperStore.saveDoc(docWithThread());

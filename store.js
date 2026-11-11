@@ -312,7 +312,11 @@ window.PaperStore = (function () {
       // Column name is historical; the value is the Supabase user id.
       owner_email: userId,
       name: doc.name,
-      mode: doc.mode,
+      // Hard guard at the cloud boundary: documents.mode is CHECK IN ('pdf','web').
+      // Coerce any stale/empty value so a bad local doc can't wedge sync.
+      mode: (doc.mode === 'pdf' || doc.mode === 'web')
+        ? doc.mode
+        : (String(doc.id).startsWith('web::') ? 'web' : 'pdf'),
       badge: doc.badge || null,
       url: doc.url || null,
       conversation_summary: doc.conversationSummary || null,
