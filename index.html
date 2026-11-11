@@ -109,6 +109,44 @@ body {
 
 #url-tips { font-size: 12px; color: #aaa; text-align: center; line-height: 1.6; }
 #url-error { display: none; font-size: 13px; color: #e04040; text-align: center; line-height: 1.5; }
+/* First-visit tutorial interstitial (js/tutorial.js) */
+#tutorial-overlay {
+  position: fixed; inset: 0; z-index: 9998;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; background: rgba(42,38,32,.5); overflow-y: auto;
+}
+.tutorial-card {
+  position: relative; width: 100%; max-width: 820px; margin: auto;
+  display: flex; flex-direction: column; align-items: center; gap: 16px;
+  background: #faf8f4; border-radius: 16px; padding: 26px 26px 22px;
+  box-shadow: 0 20px 60px rgba(42,38,32,.3);
+}
+.tutorial-title { font-family: var(--serif); font-size: 22px; font-weight: 700; color: var(--ink); }
+.tutorial-gif {
+  display: block; width: 100%; height: auto;
+  border: 1px solid #eae7e0; border-radius: 10px;
+}
+.tutorial-steps {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 22px;
+  list-style: none; counter-reset: tstep; font-size: 13.5px; color: #6b6253;
+}
+.tutorial-steps li { counter-increment: tstep; }
+.tutorial-steps li::before {
+  content: counter(tstep); display: inline-block; width: 18px; height: 18px;
+  margin-right: 7px; border-radius: 50%; background: var(--accent); color: white;
+  font-size: 11px; font-weight: 600; line-height: 18px; text-align: center;
+}
+.tutorial-done {
+  font-size: 14px; font-weight: 600; padding: 9px 26px; border-radius: 9px;
+  border: none; background: var(--accent); color: white; cursor: pointer;
+}
+.tutorial-done:hover { background: var(--accent-hover); }
+.tutorial-close {
+  position: absolute; top: 10px; right: 12px;
+  background: none; border: none; color: #a89e8c; cursor: pointer;
+  font-size: 22px; line-height: 1; padding: 2px 8px; border-radius: 6px;
+}
+.tutorial-close:hover { color: var(--ink); background: rgba(0,0,0,.05); }
 .legal-footer { margin-top: 20px; text-align: center; font-size: 12px; color: #b3ab9c; }
 .legal-footer a { color: #a89e8c; text-decoration: none; }
 .legal-footer a:hover { color: var(--accent); }
@@ -560,7 +598,7 @@ body.has-touch-notice #login-widget { top:46px; }
     </div>
 
     <div class="legal-footer">
-      <a href="privacy.html">Privacy</a><span>·</span><a href="terms.html">Terms</a>
+      <a href="#" id="tutorial-link">How it works</a><span>·</span><a href="privacy.html">Privacy</a><span>·</span><a href="terms.html">Terms</a>
     </div>
   </div>
 </div>
